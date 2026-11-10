@@ -1,0 +1,105 @@
+/*
+ * Design tokens. Structure (layers, label levels, border levels, radii, motion)
+ * follows the token layout of deepseek-ai/deepseek-harness (MIT); values and
+ * colors are Pagewise's own.
+ */
+:root {
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI", Inter, Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas, "DejaVu Sans Mono", monospace;
+  --r-xs: 4px; --r-sm: 8px; --r-md: 12px; --r-lg: 16px; --r-xl: 20px; --r-panel: 26px;
+  --ease: cubic-bezier(.4, 0, .2, 1);
+  --t-fast: .12s; --t-mid: .2s; --t-slow: .32s;
+  --col: min(calc(100% - 40px), 780px);
+  --sidebar-w: 272px;
+  --titlebar-h: 0px;
+  --glow: none;
+}
+
+/* ---------- dark (default) ---------- */
+:root, [data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0e0e12;
+  --bg-side: #131318;
+  --layer-1: #1a1a20;
+  --layer-2: #222229;
+  --layer-3: #2b2b33;
+  --text: #f5f5f7;
+  --text-2: #babbc4;
+  --text-3: #85868f;
+  --line: rgba(255, 255, 255, .07);
+  --line-2: rgba(255, 255, 255, .12);
+  --accent: #8b7cff;
+  --accent-2: #2dd4bf;
+  --accent-ink: #0d0c14;
+  --accent-soft: rgba(139, 124, 255, .15);
+  --ok: #34d399; --warn: #fbbf24; --err: #f87171;
+  --bubble: #25252d;
+  --send-bg: #f5f5f7; --send-fg: #0e0e12;
+  --shadow: 0 24px 64px rgba(0, 0, 0, .5), 0 2px 8px rgba(0, 0, 0, .3);
+  --scrim: rgba(0, 0, 0, .55);
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+  --bg: #ffffff;
+  --bg-side: #f6f6f8;
+  --layer-1: #f2f2f5;
+  --layer-2: #e9e9ee;
+  --layer-3: #dfdfe6;
+  --text: #121216;
+  --text-2: #4d4e57;
+  --text-3: #868791;
+  --line: rgba(0, 0, 0, .07);
+  --line-2: rgba(0, 0, 0, .12);
+  --accent: #6a5af9;
+  --accent-2: #0d9488;
+  --accent-ink: #ffffff;
+  --accent-soft: rgba(106, 90, 249, .1);
+  --ok: #059669; --warn: #b45309; --err: #dc2626;
+  --bubble: #f0f0f4;
+  --send-bg: #121216; --send-fg: #ffffff;
+  --shadow: 0 24px 64px rgba(20, 20, 40, .14), 0 2px 8px rgba(20, 20, 40, .06);
+  --scrim: rgba(20, 20, 30, .28);
+}
+
+/* ---------- terminal ---------- */
+[data-theme="terminal"] {
+  color-scheme: dark;
+  --phos: #39ff7a;           /* phosphor color, swapped by data-phosphor */
+  --phos-rgb: 57, 255, 122;
+  --font: var(--mono);
+  --bg: #030604;
+  --bg-side: #040805;
+  --layer-1: rgba(var(--phos-rgb), .045);
+  --layer-2: rgba(var(--phos-rgb), .08);
+  --layer-3: rgba(var(--phos-rgb), .13);
+  --text: var(--phos);
+  --text-2: rgba(var(--phos-rgb), .78);
+  --text-3: rgba(var(--phos-rgb), .5);
+  --line: rgba(var(--phos-rgb), .16);
+  --line-2: rgba(var(--phos-rgb), .3);
+  --accent: var(--phos);
+  --accent-2: var(--phos);
+  --accent-ink: #020403;
+  --accent-soft: rgba(var(--phos-rgb), .14);
+  --ok: var(--phos); --warn: #ffd23f; --err: #ff4d4d;
+  --bubble: transparent;
+  --send-bg: var(--phos); --send-fg: #020403;
+  --shadow: 0 0 0 1px rgba(var(--phos-rgb), .25), 0 0 40px rgba(var(--phos-rgb), .08);
+  --scrim: rgba(0, 0, 0, .7);
+  --r-xs: 2px; --r-sm: 3px; --r-md: 4px; --r-lg: 5px; --r-xl: 6px; --r-panel: 6px;
+  --glow: 0 0 6px rgba(var(--phos-rgb), .55), 0 0 18px rgba(var(--phos-rgb), .18);
+}
+[data-theme="terminal"][data-phosphor="amber"] { --phos: #ffb000; --phos-rgb: 255, 176, 0; }
+[data-theme="terminal"][data-phosphor="cyan"]  { --phos: #3df2ff; --phos-rgb: 61, 242, 255; }
+[data-theme="terminal"][data-phosphor="white"] { --phos: #e8f0ff; --phos-rgb: 232, 240, 255; }
+[data-theme="terminal"][data-phosphor="red"]   { --phos: #ff3b5c; --phos-rgb: 255, 59, 92; }
+
+/* ---------- desktop window chrome (Electron) ---------- */
+.is-desktop.is-mac { --titlebar-h: 38px; }
+.is-desktop.is-mac .sidebar { padding-top: calc(var(--titlebar-h) + 6px); }
+.is-desktop.is-mac[data-theme="dark"] .sidebar,
+.is-desktop.is-mac[data-theme="light"] .sidebar { background: color-mix(in srgb, var(--bg-side) 72%, transparent); }
+.is-desktop.is-win .topbar { padding-right: 150px; }
+.is-desktop .drag { -webkit-app-region: drag; app-region: drag; }
+.is-desktop .drag button, .is-desktop .drag input, .is-desktop .drag a, .is-desktop .no-drag { -webkit-app-region: no-drag; app-region: no-drag; }

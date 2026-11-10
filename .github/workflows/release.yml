@@ -1,7 +1,8 @@
 name: release
 
-# Push a tag like v0.2.0 to build the desktop app for Windows, macOS and Linux
-# and attach it to a GitHub release. "Run workflow" builds without releasing.
+# Push a tag like v0.3.0 to build the Pagewise desktop app for Windows, macOS
+# and Linux and attach it to a GitHub release. "Run workflow" builds without
+# releasing.
 on:
   push:
     tags: ["v*"]
@@ -9,6 +10,9 @@ on:
 
 permissions:
   contents: write
+
+env:
+  CSC_IDENTITY_AUTO_DISCOVERY: "false"
 
 jobs:
   build:
@@ -22,51 +26,49 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install -e . pyinstaller pillow
-      - run: python packaging/build.py
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
 
-      - name: Smoke test the packaged app with its window (Windows)
+      # The React UI builds into src/rag_lab/web, so it must exist before the
+      # engine is frozen.
+      - name: Build the web UI
+        if: hashFiles('apps/web/package.json') != ''
+        run: |
+          npm --prefix apps/web ci
+          npm --prefix apps/web run build
+
+      - run: pip install -e . pyinstaller pillow
+      - name: Build the engine
+        run: python packaging/build_engine.py
+
+      - run: npm --prefix apps/desktop ci
+      - name: Package the app
+        run: npm --prefix apps/desktop run dist
+
+      - name: Smoke test the packaged app (macOS)
+        if: runner.os == 'macOS'
+        run: '"apps/desktop/release/mac-arm64/Pagewise.app/Contents/MacOS/Pagewise" --smoke'
+      - name: Smoke test the packaged app (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $p = Start-Process -FilePath "dist\RAG-Help-Desk\RAG-Help-Desk.exe" -ArgumentList "--smoke","--window" -Wait -PassThru
+          $p = Start-Process -FilePath "apps\desktop\release\win-unpacked\Pagewise.exe" -ArgumentList "--smoke" -Wait -PassThru -NoNewWindow
           if ($p.ExitCode -ne 0) { throw "smoke test failed: $($p.ExitCode)" }
-      - name: Smoke test the packaged app with its window (macOS)
-        if: runner.os == 'macOS'
-        run: dist/RAG-Help-Desk.app/Contents/MacOS/RAG-Help-Desk --smoke --window
       - name: Smoke test the packaged app (Linux)
         if: runner.os == 'Linux'
-        run: xvfb-run -a dist/RAG-Help-Desk/RAG-Help-Desk --smoke
-
-      - name: Windows installer
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $version = if ("${{ github.ref_type }}" -eq "tag") { "${{ github.ref_name }}".TrimStart("v") } else { "0.0.0" }
-          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
-          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
-          & $iscc "/DAppVersion=$version" packaging\windows.iss
-          if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed" }
-      - name: macOS zip and disk image
-        if: runner.os == 'macOS'
-        run: |
-          ditto -c -k --keepParent dist/RAG-Help-Desk.app dist/RAG-Help-Desk-macOS-arm64.zip
-          hdiutil create -volname "RAG Help Desk" -srcfolder dist/RAG-Help-Desk.app -ov -format UDZO dist/RAG-Help-Desk-macOS-arm64.dmg
-      - name: Linux archive
-        if: runner.os == 'Linux'
-        run: |
-          cp packaging/icon.png dist/RAG-Help-Desk/icon.png
-          tar -czf dist/RAG-Help-Desk-Linux-x86_64.tar.gz -C dist RAG-Help-Desk
+        run: xvfb-run -a apps/desktop/release/linux-unpacked/pagewise --smoke --no-sandbox
 
       - uses: actions/upload-artifact@v4
         with:
           name: app-${{ runner.os }}
           path: |
-            dist/RAG-Help-Desk-Setup.exe
-            dist/RAG-Help-Desk-macOS-arm64.zip
-            dist/RAG-Help-Desk-macOS-arm64.dmg
-            dist/RAG-Help-Desk-Linux-x86_64.tar.gz
-          if-no-files-found: ignore
+            apps/desktop/release/*.dmg
+            apps/desktop/release/*.zip
+            apps/desktop/release/*.exe
+            apps/desktop/release/*.AppImage
+            apps/desktop/release/*.tar.gz
+          if-no-files-found: error
 
   release:
     if: github.ref_type == 'tag'
@@ -77,19 +79,21 @@ jobs:
         with:
           path: assets
           merge-multiple: true
+      - name: Write checksums
+        run: cd assets && sha256sum -- * > SHA256SUMS.txt && cat SHA256SUMS.txt
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "${{ github.ref_name }}" assets/* \
             --repo "${{ github.repository }}" \
-            --title "RAG Help Desk ${{ github.ref_name }}" \
+            --title "Pagewise ${{ github.ref_name }}" \
             --notes-file - <<'EOF'
-          Desktop app for the Chapter 5B RAG lab: chat with your documents using OpenAI, Claude, Gemini, DeepSeek, Mistral, Groq, OpenRouter, Ollama and other models.
+          Pagewise desktop app: chat with your documents using OpenAI, Claude, Gemini, DeepSeek, Mistral, Groq, OpenRouter, Ollama and other models.
 
           **Install with one command (no security warning):**
 
-          macOS (Apple Silicon) and Linux:
+          macOS (Apple Silicon) and Linux (x86_64):
           ```
           curl -fsSL https://raw.githubusercontent.com/Kernel-Hunter/rag-langgraph-lab/main/install.sh | bash
           ```

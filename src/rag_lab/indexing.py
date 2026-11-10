@@ -11,15 +11,25 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 PAGE_MARKER = re.compile(r"^<!--\s*page\s+(\d+)\s*-->\s*$", re.MULTILINE)
 
 
-def _load_pdf(path: Path) -> list[Document]:
+MAX_FILE_BYTES = 50 * 1024 * 1024  # larger files are skipped
+MAX_PDF_PAGES = 2000  # pages after this are ignored
+
+
+class SkippedFile(Exception):
+    """A file left out of the index on purpose (too big)."""
+
+
+def _load_pdf(path: Path, warnings: list | None = None) -> list[Document]:
     reader = pypdf.PdfReader(str(path))
-    return [
-        Document(
-            page_content=page.extract_text() or "",
-            metadata={"source": path.name, "page": i + 1},
-        )
-        for i, page in enumerate(reader.pages)
-    ]
+    total = len(reader.pages)
+    if total > MAX_PDF_PAGES and warnings is not None:
+        warnings.append({"source": path.name,
+                         "message": f"Only the first {MAX_PDF_PAGES} of {total} pages were indexed."})
+    docs = []
+    for i in range(min(total, MAX_PDF_PAGES)):
+        docs.append(Document(page_content=reader.pages[i].extract_text() or "",
+                             metadata={"source": path.name, "page": i + 1}))
+    return docs
 
 
 def _load_text(path: Path) -> list[Document]:
@@ -38,16 +48,31 @@ def _load_text(path: Path) -> list[Document]:
     return docs
 
 
-def load_documents(path: str | Path) -> list[Document]:
-    """Step 1. One Document per page, with metadata to cite later."""
+def load_documents(path: str | Path, warnings: list | None = None) -> list[Document]:
+    """Step 1. One Document per page, with metadata to cite later.
+
+    With a `warnings` list, a file that is too big or cannot be read is skipped and a
+    {"source", "message"} entry is appended, so one bad file does not stop the others.
+    Without it, errors are raised as before.
+    """
     path = Path(path)
     files = sorted(p for p in path.rglob("*") if p.is_file()) if path.is_dir() else [path]
     docs: list[Document] = []
     for f in files:
-        if f.suffix.lower() == ".pdf":
-            docs.extend(_load_pdf(f))
-        elif f.suffix.lower() in {".md", ".txt"}:
-            docs.extend(_load_text(f))
+        suffix = f.suffix.lower()
+        if suffix not in {".pdf", ".md", ".txt"}:
+            continue
+        try:
+            size = f.stat().st_size
+            if size > MAX_FILE_BYTES:
+                raise SkippedFile(f"File is larger than {MAX_FILE_BYTES // (1024 * 1024)} MB; skipped.")
+            docs.extend(_load_pdf(f, warnings) if suffix == ".pdf" else _load_text(f))
+        except Exception as exc:
+            if warnings is None:
+                raise
+            msg = str(exc) if isinstance(exc, SkippedFile) else \
+                f"Could not read this file ({type(exc).__name__}: {str(exc)[:200]}); skipped."
+            warnings.append({"source": f.name, "message": msg})
     if not docs:
         raise FileNotFoundError(f"No .pdf, .md or .txt documents found at {path}")
     return docs

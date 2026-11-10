@@ -1,0 +1,45 @@
+.composer-wrap { width: var(--col); margin: 0 auto; padding: 0 0 14px; position: relative; z-index: 3; }
+.composer {
+  position: relative; display: flex; flex-direction: column; gap: 6px;
+  padding: 12px 12px 10px 16px; border-radius: var(--r-panel);
+  background: var(--layer-1); border: 1px solid var(--line-2);
+  box-shadow: 0 10px 34px rgba(0, 0, 0, .18);
+  transition: border-color var(--t-mid), box-shadow var(--t-mid);
+}
+.composer:focus-within { border-color: color-mix(in srgb, var(--accent) 55%, var(--line-2)); box-shadow: 0 10px 34px rgba(0, 0, 0, .18), 0 0 0 4px var(--accent-soft); }
+.composer textarea {
+  resize: none; border: 0; outline: 0; background: transparent; width: 100%;
+  min-height: 26px; max-height: 40vh; padding: 3px 0; line-height: 1.55; font-size: 15px;
+}
+.composer textarea::placeholder { color: var(--text-3); }
+.composer-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.composer-left, .composer-right { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.chip-btn {
+  display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px; border-radius: 99px;
+  font-size: 12.5px; color: var(--text-2); border: 1px solid var(--line); min-width: 0;
+  transition: background var(--t-fast), color var(--t-fast), border-color var(--t-fast);
+}
+.chip-btn:hover:not(:disabled) { background: var(--layer-2); color: var(--text); }
+.chip-btn .chip-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; }
+.chip-btn.toggle.on { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); background: var(--accent-soft); }
+.send {
+  width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center;
+  background: var(--send-bg); color: var(--send-fg);
+  transition: transform var(--t-fast), opacity var(--t-fast);
+}
+.send:hover:not(:disabled) { transform: scale(1.06); }
+.send:disabled { opacity: .3; }
+.send svg { stroke-width: 2.2; }
+.stop-square { width: 11px; height: 11px; border-radius: 2.5px; background: currentColor; }
+.count { font-size: 12px; color: var(--text-3); }
+.count.err { color: var(--err); }
+.hint { margin: 8px 0 0; text-align: center; font-size: 11.5px; color: var(--text-3); }
+.composer-prompt { display: none; }
+
+[data-theme="terminal"] .composer { flex-direction: column; background: rgba(0, 0, 0, .55); box-shadow: none; padding-left: 34px; }
+[data-theme="terminal"] .composer:focus-within { box-shadow: 0 0 0 1px var(--phos), 0 0 22px rgba(var(--phos-rgb), .15); }
+[data-theme="terminal"] .composer-prompt { display: block; position: absolute; left: 16px; top: 15px; color: var(--text); font-weight: 700; }
+[data-theme="terminal"] .composer textarea { caret-color: var(--phos); caret-shape: block; }
+[data-theme="terminal"] .send { border-radius: var(--r-sm); }
+[data-theme="terminal"] .chip-btn { border-radius: var(--r-sm); border-style: dashed; }
+@media (max-width: 640px) { .chip-btn .chip-label { max-width: 120px; } .hint { display: none; } }

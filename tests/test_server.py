@@ -1,29 +1,6 @@
 """Local API behind the desktop app, with fake models and a throwaway home folder."""
 
-import importlib
 import json
-
-import pytest
-from fastapi.testclient import TestClient
-from langchain_core.language_models.fake_chat_models import FakeListChatModel
-
-
-@pytest.fixture
-def client(tmp_path, monkeypatch):
-    monkeypatch.setenv("RAG_LAB_HOME", str(tmp_path))
-    (tmp_path / "config.json").write_text(json.dumps({"embeddings": "fake", "provider": "ollama"}))
-    from rag_lab import providers, server
-
-    importlib.reload(providers)
-    importlib.reload(server)
-    engine = server.Engine()
-    engine.rebuild()
-    engine._llm = FakeListChatModel(responses=["Two absences are allowed [page 3]."])
-    engine._llm_key = (engine.settings["provider"], engine.settings["model"])
-    app = server.create_app("t0k", engine)
-    c = TestClient(app)
-    c.headers["X-Token"] = "t0k"
-    return c
 
 
 def _events(text):

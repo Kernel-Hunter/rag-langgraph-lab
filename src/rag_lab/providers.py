@@ -16,8 +16,36 @@ from pathlib import Path
 from dotenv import load_dotenv
 from langchain_core.embeddings import Embeddings
 
-# Per-user folder: settings, keys, downloaded embedding model, index cache, documents.
-HOME = Path(os.getenv("RAG_LAB_HOME", Path.home() / ".rag-lab"))
+APP_NAME = "Pagewise"
+
+
+def resolve_home(user_home: Path | None = None) -> Path:
+    """Per-user folder: settings, keys, downloaded embedding model, index cache, documents.
+
+    PAGEWISE_HOME or RAG_LAB_HOME override it. Otherwise ~/.pagewise; the first time it
+    is used, the contents of the old ~/.rag-lab folder are copied over (the old folder stays).
+    """
+    override = os.getenv("PAGEWISE_HOME") or os.getenv("RAG_LAB_HOME")
+    if override:
+        return Path(override)
+    base = Path(user_home) if user_home is not None else Path.home()
+    new, old = base / ".pagewise", base / ".rag-lab"
+    if not new.exists() and old.is_dir():
+        import shutil
+
+        tmp = base / ".pagewise.migrating"
+        try:
+            shutil.rmtree(tmp, ignore_errors=True)
+            # The Chrome app-mode profile is a cache; not worth copying.
+            shutil.copytree(old, tmp, ignore=shutil.ignore_patterns("browser-profile"), symlinks=True)
+            os.replace(tmp, new)
+        except OSError:
+            shutil.rmtree(tmp, ignore_errors=True)
+            return old  # could not migrate: keep using the old folder as is
+    return new
+
+
+HOME = resolve_home()
 USER_ENV = HOME / ".env"
 
 load_dotenv()          # project .env wins
@@ -108,7 +136,32 @@ def _base_url(provider: Provider) -> str | None:
     return provider.base_url
 
 
+FAKE_ANSWER = "Two absences are allowed [page 3]."
+
+
+def fake_llm_enabled() -> bool:
+    """RAG_LAB_FAKE_LLM=1: offline fake chat model and fake embeddings, for UI end-to-end tests."""
+    return os.getenv("RAG_LAB_FAKE_LLM", "").strip().lower() in {"1", "true", "yes"}
+
+
+def _fake_chat_model():
+    import itertools
+
+    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+    from langchain_core.messages import AIMessage
+
+    class FakeChat(GenericFakeChatModel):
+        """Streams FAKE_ANSWER word by word. bind_tools is a no-op so agent mode answers directly."""
+
+        def bind_tools(self, tools, **kwargs):
+            return self
+
+    return FakeChat(messages=itertools.repeat(AIMessage(content=FAKE_ANSWER)))
+
+
 def get_llm(provider: str | None = None, model: str | None = None, temperature: float = 0):
+    if fake_llm_enabled():
+        return _fake_chat_model()
     pid = (provider or os.getenv("LLM_PROVIDER", "openai")).lower()
     if pid not in PROVIDERS:
         raise ValueError(f"Unknown LLM_PROVIDER {pid!r}. Use one of {sorted(PROVIDERS)}.")
@@ -152,6 +205,8 @@ class LocalEmbeddings(Embeddings):
 
 def get_embeddings(provider: str | None = None, model: str | None = None):
     pid = (provider or os.getenv("EMBEDDINGS_PROVIDER", "local")).lower()
+    if pid == "local" and fake_llm_enabled():
+        pid = "fake"  # no model download in fake mode
     if pid == "fake":
         from langchain_core.embeddings import DeterministicFakeEmbedding
 
@@ -184,7 +239,10 @@ def list_models(provider: str, timeout: float = 6.0) -> list[str]:
     else:
         base = _base_url(p) or "https://api.openai.com/v1"
         url, headers = base.rstrip("/") + "/models", {"Authorization": f"Bearer {_key(p) or 'not-needed'}"}
-    if not p.local and not _key(p):
+    custom_endpoint = p.id == "custom" and bool(_base_url(p))  # may not need a key
+    if p.id == "custom" and not custom_endpoint:
+        return fallback
+    if not p.local and not _key(p) and not custom_endpoint:
         return fallback
     try:
         with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=timeout) as resp:
@@ -195,9 +253,28 @@ def list_models(provider: str, timeout: float = 6.0) -> list[str]:
     return ids or fallback
 
 
+def _restrict(path: Path, mode: int) -> None:
+    try:
+        path.chmod(mode)
+    except OSError:  # Windows ignores POSIX modes
+        pass
+
+
 def save_user_settings(values: dict[str, str]) -> Path:
-    """Merge values into ~/.rag-lab/.env (readable only by the current user)."""
+    """Merge values into HOME/.env (readable only by the current user).
+
+    Values with a line break are refused: they would inject extra variables into the file.
+    The file is replaced atomically, so a crash never leaves it half written.
+    """
+    import tempfile
+
+    for key, value in values.items():
+        if not isinstance(key, str) or not key or any(c in key for c in "\r\n=#") or key != key.strip():
+            raise ValueError(f"invalid setting name {key!r}")
+        if value is not None and ("\n" in str(value) or "\r" in str(value)):
+            raise ValueError(f"{key} must not contain a line break")
     HOME.mkdir(parents=True, exist_ok=True)
+    _restrict(HOME, 0o700)
     current: dict[str, str] = {}
     if USER_ENV.exists():
         for line in USER_ENV.read_text(encoding="utf-8").splitlines():
@@ -210,9 +287,17 @@ def save_user_settings(values: dict[str, str]) -> Path:
             os.environ[key] = value
         else:
             current.pop(key, None)
-    USER_ENV.write_text("".join(f"{k}={v}\n" for k, v in current.items()), encoding="utf-8")
+            os.environ.pop(key, None)
+    fd, tmp = tempfile.mkstemp(prefix=".env.", suffix=".tmp", dir=HOME)  # created 0600
     try:
-        USER_ENV.chmod(0o600)
-    except OSError:  # Windows ignores POSIX modes
-        pass
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+            f.write("".join(f"{k}={v}\n" for k, v in current.items()))
+            f.flush()
+            os.fsync(f.fileno())
+        _restrict(Path(tmp), 0o600)
+        os.replace(tmp, USER_ENV)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+    _restrict(USER_ENV, 0o600)
     return USER_ENV

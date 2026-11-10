@@ -10,3 +10,9 @@ eval/results/
 .DS_Store
 build/
 dist/
+apps/desktop/release/
+apps/desktop/engine/
+apps/desktop/node_modules/
+apps/desktop/dist/
+apps/web/node_modules/
+apps/web/tsconfig.tsbuildinfo

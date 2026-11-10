@@ -1,0 +1,30 @@
+.fx { position: absolute; inset: 0; z-index: 0; pointer-events: none; overflow: hidden; opacity: calc(var(--fx, .55) * .9); contain: strict; }
+.fx-canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.fx-layer-matrix { opacity: calc(var(--fx, .55) * .8); }
+.fx-layer-stars { opacity: calc(var(--fx, .55) * 1.2); }
+.fx-layer-grid { opacity: calc(var(--fx, .55) * .9); -webkit-mask: linear-gradient(transparent 40%, #000 75%); mask: linear-gradient(transparent 40%, #000 75%); }
+
+/* aurora: three blurred blobs moved by transform only (GPU, no repaint) */
+.blob { position: absolute; width: 60vmax; height: 60vmax; border-radius: 50%; filter: blur(90px); opacity: .32; will-change: transform; }
+.b1 { background: var(--accent); left: -15vmax; top: -20vmax; animation: drift1 26s ease-in-out infinite alternate; }
+.b2 { background: var(--accent-2); right: -20vmax; bottom: -25vmax; animation: drift2 32s ease-in-out infinite alternate; }
+.b3 { background: color-mix(in srgb, var(--accent) 50%, #ff5fa2); left: 30vw; top: 35vh; width: 40vmax; height: 40vmax; opacity: .18; animation: drift3 38s ease-in-out infinite alternate; }
+[data-theme="light"] .blob { opacity: .2; }
+[data-theme="terminal"] .blob { opacity: .14; }
+@keyframes drift1 { to { transform: translate(18vw, 14vh) scale(1.15); } }
+@keyframes drift2 { to { transform: translate(-22vw, -10vh) scale(.9); } }
+@keyframes drift3 { to { transform: translate(-16vw, 12vh) scale(1.25); } }
+
+/* CRT: scanlines + vignette + a slow sweep; sits ABOVE the content but ignores clicks */
+.fx-layer-scanlines { position: fixed; z-index: 60; opacity: var(--fx, .55); }
+.crt-lines { position: absolute; inset: 0; background: repeating-linear-gradient(180deg, rgba(0, 0, 0, .28) 0 1px, transparent 1px 3px); }
+[data-theme="light"] .crt-lines { background: repeating-linear-gradient(180deg, rgba(0, 0, 0, .08) 0 1px, transparent 1px 3px); }
+.crt-vignette { position: absolute; inset: 0; background: radial-gradient(ellipse at center, transparent 55%, rgba(0, 0, 0, .55) 100%); }
+[data-theme="light"] .crt-vignette { background: radial-gradient(ellipse at center, transparent 60%, rgba(0, 0, 0, .15) 100%); }
+.crt-sweep { position: absolute; left: 0; right: 0; height: 22vh; top: -22vh; background: linear-gradient(180deg, transparent, rgba(var(--phos-rgb, 255, 255, 255), .05), transparent); animation: sweep 7s linear infinite; will-change: transform; }
+@keyframes sweep { to { transform: translateY(130vh); } }
+[data-effect="scanlines"][data-theme="terminal"] .app { animation: flicker 5s steps(1) infinite; }
+@keyframes flicker { 0%, 100% { opacity: 1; } 47% { opacity: .985; } 48% { opacity: 1; } 82% { opacity: .99; } }
+
+/* main-pane content sits above the effect layer */
+.main > :not(.fx) { position: relative; z-index: 1; }

@@ -5,8 +5,8 @@ Codex, Cursor, ...). Point your harness at this file if it does not pick it up o
 
 ## What this project is
 
-Chapter 5B lab of the Prompt Engineering course (MedTech, SMU): a RAG help desk that
-answers questions about a course handbook, built with LangChain 1.x and LangGraph 1.x.
+Chapter 5B lab of the Prompt Engineering course (MedTech, SMU), shipped as the Pagewise
+desktop app: it answers questions about a course handbook (or any documents), built with LangChain 1.x and LangGraph 1.x.
 The code follows the slides on purpose. Keep the same names (`State`, `retrieve`,
 `generate`, `PROMPT`, `search_handbook`, `similarity_search`) so the code still reads
 like the course material.
@@ -20,8 +20,9 @@ like the course material.
 - `src/rag_lab/evaluate.py`: eval harness that scores answers against `eval/questions.yaml`.
 - `src/rag_lab/cli.py`: `rag-lab ask | agent | chat | eval`.
 - `src/rag_lab/server.py`: FastAPI app on 127.0.0.1 with a per-launch token; streams answers as server-sent events.
-- `src/rag_lab/web/`: the UI (plain HTML/CSS/JS, vendored marked + DOMPurify). Sanitize any model output before inserting it.
-- `src/rag_lab/desktop.py`: `rag-lab-app`; opens the UI in a pywebview window. `--serve` runs only the server, `--smoke` tests a build.
+- `apps/web/`: the React UI (Vite + TypeScript). `npm run build` writes it to `src/rag_lab/web/` (generated, do not edit there). Model output goes through `renderMarkdown` (marked + DOMPurify); never insert it any other way.
+- `apps/desktop/`: the Electron shell. It starts the engine (`--engine`), reads its `PAGEWISE_READY` line and loads the UI.
+- `src/rag_lab/desktop.py`: engine entry point. `--engine` for Electron, `--serve` for UI development, `--smoke` tests a build, no flag opens a browser app window.
 - `src/rag_lab/service.py`: `HelpDesk`, a small wrapper used by older code and tests.
 - `data/`: documents to index (`.pdf`, `.md`, `.txt`).
 - `tests/`: offline tests with fake embeddings and a fake chat model.
@@ -31,6 +32,7 @@ like the course material.
 ```bash
 pip install -e ".[dev]"   # add ,chroma or ,local as needed
 pytest -q                 # must pass before every PR, needs no API key
+npm --prefix apps/web test && npm --prefix apps/web run typecheck   # when you touch the UI
 rag-lab ask "How many absences are allowed?"
 rag-lab eval --label my-change
 ```

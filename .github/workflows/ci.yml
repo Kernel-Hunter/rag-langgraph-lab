@@ -25,3 +25,27 @@ jobs:
           if [ "$RUNNER_OS" = "Linux" ]; then xvfb-run -a pytest -q -rs; else pytest -q -rs; fi
       - name: CLI entry point works
         run: rag-lab --help
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm --prefix apps/web ci
+      - run: npm --prefix apps/web run typecheck
+      - run: npm --prefix apps/web test
+      - run: npm --prefix apps/web run build
+      - name: Built UI in src/rag_lab/web is up to date
+        run: git status --porcelain src/rag_lab/web && test -z "$(git status --porcelain src/rag_lab/web)"
+
+  desktop:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm --prefix apps/desktop ci
+      - run: npm --prefix apps/desktop run build

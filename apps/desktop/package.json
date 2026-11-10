@@ -1,0 +1,21 @@
+{
+  "name": "pagewise-desktop",
+  "productName": "Pagewise",
+  "version": "0.3.0",
+  "private": true,
+  "description": "Pagewise desktop app: chat with your documents.",
+  "author": "Karim Masmoudi",
+  "homepage": "https://github.com/Kernel-Hunter/rag-langgraph-lab",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "npm run build && electron .",
+    "dist": "npm run build && electron-builder --config scripts/electron-builder-config.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "electron": "45.2.3",
+    "electron-builder": "^26.18.0",
+    "typescript": "^7.0.2"
+  }
+}
