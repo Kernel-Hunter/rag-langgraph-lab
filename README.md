@@ -54,7 +54,25 @@ DeepSeek has no embeddings endpoint, so pair it with local HuggingFace embedding
 
 For Ollama: `ollama pull gemma3` and `ollama pull nomic-embed-text` first.
 
-## Desktop app
+## Download the app
+
+No Python needed. Get the file for your system from the
+[latest release](https://github.com/Kernel-Hunter/rag-langgraph-lab/releases/latest):
+
+| System | File | First run |
+|---|---|---|
+| Windows 10/11 | `RAG-Help-Desk-Setup.exe` | SmartScreen may warn because the installer is not signed: "More info", then "Run anyway". |
+| macOS (Apple Silicon) | `RAG-Help-Desk-macOS.dmg` | Drag the app to Applications, then right-click it and choose Open once. |
+| Linux x86_64 | `RAG-Help-Desk-Linux-x86_64.tar.gz` | `tar -xzf` it and run `RAG-Help-Desk/RAG-Help-Desk`. |
+
+In the app, pick a chat model and embeddings on the left, paste your API key and press
+"Apply and re-index". Tick "Remember settings and key" to keep them in `~/.rag-lab/.env`.
+The app ships with the sample handbook; "Choose folder…" points it at your own documents.
+
+To make a new release, push a tag: `git tag v0.2.0 && git push origin v0.2.0`.
+The release workflow builds and tests all three installers and attaches them.
+
+## Desktop app from source
 
 ```bash
 rag-lab-app
