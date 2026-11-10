@@ -1,0 +1,37 @@
+[project]
+name = "rag-langgraph-lab"
+version = "0.1.0"
+description = "Chapter 5B lab: a RAG help desk built with LangChain and LangGraph, with swappable model providers and an eval harness."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "langchain>=1.0",
+    "langchain-core>=1.0",
+    "langchain-openai>=1.0",
+    "langchain-deepseek>=1.0",
+    "langchain-text-splitters>=1.0",
+    "langgraph>=1.0",
+    "numpy>=1.26",
+    "pypdf>=5.0",
+    "python-dotenv>=1.0",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+ollama = ["langchain-ollama>=1.0"]
+chroma = ["langchain-chroma>=1.0"]
+local = ["langchain-huggingface>=1.0", "sentence-transformers>=3.0"]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+rag-lab = "rag_lab.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/rag_lab"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
