@@ -44,6 +44,9 @@ def build_graph(vector_store, llm, k: int = 3, check: bool = False):
         return {"answer": llm.invoke(prompt).content}
 
     def check_node(state: State) -> dict:
+        # A refusal claims nothing, so it is supported. Small models often answer "no" here.
+        if "don't know" in state["answer"].lower().replace("’", "'"):
+            return {"supported": True}
         prompt = CHECK_PROMPT.format(context=format_context(state["context"]), answer=state["answer"])
         verdict = str(llm.invoke(prompt).content).strip().lower()
         return {"supported": verdict.startswith("yes")}

@@ -47,6 +47,13 @@ def test_check_node_sets_flag():
     assert result["supported"] is True
 
 
+def test_check_node_accepts_refusal_without_asking():
+    store, _ = _store()
+    llm = FakeListChatModel(responses=["I don't know.", "no"])  # "no" must never be read
+    result = build_graph(store, llm, check=True).invoke({"question": "Can I bring my dog?"})
+    assert result["supported"] is True
+
+
 def test_score_rules():
     assert score({"expect_any": ["week 13"]}, "The exam is in Week 13 [page 2].")
     assert not score({"expect_any": ["week 13"]}, "I don't know.")
