@@ -16,7 +16,13 @@ from __future__ import annotations
 from collections.abc import Iterator
 
 from langchain.agents import create_agent
-from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage, ToolMessage
+from langchain_core.messages import (
+    AIMessage,
+    AIMessageChunk,
+    BaseMessage,
+    HumanMessage,
+    ToolMessage,
+)
 
 from vesper.workspace import Workspace, system_prompt
 

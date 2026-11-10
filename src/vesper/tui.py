@@ -59,6 +59,7 @@ SLASH = {
     "/exit": "quit (or Ctrl+D)",
 }
 MAX_MENTION_CHARS = 60_000
+MAX_PIPED_CHARS = 200_000  # text piped into one-shot mode
 
 console = Console(highlight=False)
 err_console = Console(stderr=True, highlight=False)
@@ -92,9 +93,9 @@ def ollama_running() -> bool:
     import urllib.request
 
     try:
-        with urllib.request.urlopen("http://localhost:11434/api/tags", timeout=0.6):  # noqa: S310 - fixed local URL
+        with urllib.request.urlopen("http://localhost:11434/api/tags", timeout=0.6):
             return True
-    except Exception:  # noqa: BLE001
+    except Exception:
         return False
 
 
@@ -356,7 +357,7 @@ class App:
         except KeyboardInterrupt:
             r.flush()
             console.print(Text("  ⎿  Interrupted. Tell Vesper what to do instead.", style=WARN))
-        except Exception as exc:  # noqa: BLE001 - show any provider error inside the session
+        except Exception as exc:
             r.flush()
             self.show_error(exc)
         finally:
@@ -463,7 +464,7 @@ class App:
                 if not p.is_file():
                     continue
                 body = self.workspace.read_file(rel, 1, 2000)
-            except Exception:  # noqa: BLE001 - outside the folder or unreadable: leave as text
+            except Exception:
                 continue
             attached.append(f'<file path="{rel}">\n{body[:MAX_MENTION_CHARS]}\n</file>')
             console.print(Text.assemble(("  ⎿  attached ", MUTED), (rel, ACCENT)))
@@ -517,7 +518,7 @@ class App:
         try:
             self.session.set_llm(self.llm())
             console.print(Text.assemble(("  model: ", MUTED), (model_label(self.cfg), "bold")))
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             self.show_error(exc)
 
     def shell(self, command: str) -> None:
@@ -525,7 +526,7 @@ class App:
         if not command.strip():
             return
         try:
-            proc = subprocess.run(command, shell=True, cwd=self.root)  # noqa: S602 - typed by the user
+            proc = subprocess.run(command, shell=True, cwd=self.root)
             if proc.returncode:
                 console.print(Text(f"  exit code {proc.returncode}", style=WARN))
         except KeyboardInterrupt:
@@ -634,7 +635,7 @@ def pick_model(cfg: dict) -> bool:
     with console.status(Text("Fetching models…", style=MUTED), spinner="dots", spinner_style=ACCENT):
         try:
             live = prov.list_models(pid)
-        except Exception:  # noqa: BLE001
+        except Exception:
             live = []
     models = list(dict.fromkeys([*p.suggestions, *[m for m in live if "embed" not in m.lower()]]))[:30]
     if not models and p.chat_model:
@@ -678,22 +679,22 @@ def open_app() -> None:
         found = next((c for c in (Path("/Applications/Vesper.app"), Path.home() / "Applications" / "Vesper.app")
                       if c.exists()), None)
         if found:
-            subprocess.Popen(["open", str(found)])  # noqa: S603,S607
+            subprocess.Popen(["open", str(found)])
     elif os.name == "nt":
         exe = Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Vesper" / "Vesper.exe"
         if exe.exists():
             found = exe
-            subprocess.Popen([str(exe)])  # noqa: S603
+            subprocess.Popen([str(exe)])
     else:
         img = Path.home() / ".local" / "share" / "vesper" / "Vesper.AppImage"
         if img.exists():
             found = img
-            subprocess.Popen([str(img)], start_new_session=True)  # noqa: S603
+            subprocess.Popen([str(img)], start_new_session=True)
     if found:
         console.print(Text("  Opening the Vesper app…", style=MUTED))
         return
     console.print(Text("  The desktop app is not installed; opening the same interface in your browser…", style=MUTED))
-    subprocess.Popen([sys.executable, "-m", "vesper.desktop"], start_new_session=True)  # noqa: S603
+    subprocess.Popen([sys.executable, "-m", "vesper.desktop"], start_new_session=True)
 
 
 # ---------------------------------------------------------------- entry points
@@ -752,9 +753,11 @@ def print_mode(root: Path, question: str, cfg: dict, mode: str) -> int:
             if event == "token":
                 answer.append(data["text"])
             elif event == "tool_start":
+                if answer and not answer[-1].endswith("\n"):
+                    answer.append("\n\n")  # text before and after a tool call are separate paragraphs
                 label = TOOL_LABELS.get(data["name"], data["name"])
                 err_console.print(f"● {label} {summarize_args(data['name'], data['args'])}", style=MUTED)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         from vesper.server import friendly_error
 
         err_console.print(friendly_error(exc, cfg.get("provider", "")), style=ERR)
@@ -804,11 +807,14 @@ def main(argv: list[str] | None = None) -> int:
         cfg.update(provider=pid, model=model)
     mode = args.mode or (cfg.get("agent_mode") if cfg.get("agent_mode") in MODES else "ask")
 
-    if args.prompt:
-        return print_mode(root, " ".join(args.prompt), cfg, mode)
-    if not sys.stdin.isatty():
-        question = sys.stdin.read().strip()
-        return print_mode(root, question, cfg, mode) if question else 0
+    piped = "" if sys.stdin is None or sys.stdin.isatty() else sys.stdin.read(MAX_PIPED_CHARS + 1).strip()
+    if len(piped) > MAX_PIPED_CHARS:
+        piped = piped[:MAX_PIPED_CHARS] + "\n[... input cut off]"
+    if args.prompt or piped:
+        question = " ".join(args.prompt)
+        if piped:  # `git diff | vesper "write a commit message"`: the piped text comes with the question
+            question = f"{question}\n\n<stdin>\n{piped}\n</stdin>" if question else piped
+        return print_mode(root, question, cfg, mode)
 
     console.print()
     if not trust_folder(root):
@@ -821,7 +827,7 @@ def main(argv: list[str] | None = None) -> int:
     with console.status(Text("Starting…", style=MUTED), spinner="dots", spinner_style=ACCENT):
         try:
             app.build()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             app.show_error(exc)
             return 1
     app.loop()

@@ -13,14 +13,15 @@ import hashlib
 import hmac
 import json
 import os
+import queue
 import re
 import secrets
 import shutil
 import sys
 import threading
 import traceback
+from collections import OrderedDict
 from pathlib import Path
-
 from urllib.parse import urlparse
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
@@ -53,7 +54,12 @@ MAX_NAME_LEN = 200
 MAX_QUESTION_CHARS = 8000
 MAX_MODEL_LEN = 200
 MAX_KEY_LEN = 500
-MODES = ("graph", "agent")
+MODES = ("folder", "graph", "agent")
+AGENT_MODES = ("ask", "auto-edit", "yolo")
+MAX_SESSIONS = 30
+APPROVAL_TIMEOUT_S = 600
+MAX_HISTORY_TURNS = 40
+CHAT_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 SECURITY_HEADERS = {
     "Content-Security-Policy": (
@@ -75,8 +81,10 @@ DEFAULTS = {
     "chunk_size": 600,
     "chunk_overlap": 100,
     "k": 3,
-    "mode": "graph",
+    "mode": "folder",
     "check": False,
+    "workspace": "",
+    "agent_mode": "ask",
 }
 
 
@@ -176,8 +184,26 @@ def _check_field(name: str, value) -> object:
         return _int_field(name, value, 1, 20)
     if name == "mode":
         if value not in MODES:
-            _bad("mode must be graph or agent.")
+            _bad("mode must be folder, graph or agent.")
         return value
+    if name == "agent_mode":
+        if value not in AGENT_MODES:
+            _bad("agent_mode must be ask, auto-edit or yolo.")
+        return value
+    if name == "workspace":
+        value = _text_field(name, value, 4096)
+        if not value:
+            return ""
+        folder = Path(os.path.expanduser(value))
+        if not folder.is_absolute():
+            _bad("The folder must be a full path.")
+        try:
+            folder = folder.resolve()
+        except OSError:
+            _bad("That folder cannot be opened.")
+        if not folder.is_dir():
+            _bad("That folder does not exist.")
+        return str(folder)
     if name == "check":
         if not isinstance(value, bool):
             _bad("check must be true or false.")
@@ -332,10 +358,22 @@ class Engine:
         self.index = {"status": "idle", "chunks": 0, "pages": 0, "error": None, "warnings": []}
         self._llm = None
         self._llm_key = None
+        self._sessions: OrderedDict[str, dict] = OrderedDict()
+        self._sessions_lock = threading.Lock()
+        self._approvals: dict[str, dict] = {}
 
     # ----- settings -----
     def save(self):
-        CONFIG.write_text(json.dumps(self.settings, indent=2))
+        """Merge into config.json: the terminal UI keeps its own keys in the same file."""
+        try:
+            current = json.loads(CONFIG.read_text()) if CONFIG.exists() else {}
+        except (OSError, ValueError):
+            current = {}
+        if not isinstance(current, dict):
+            current = {}
+        tmp = CONFIG.with_name("config.json.tmp")
+        tmp.write_text(json.dumps({**current, **self.settings}, indent=2))
+        os.replace(tmp, CONFIG)
 
     def update(self, values: dict) -> bool:
         """Apply new settings. Returns True when the index must be rebuilt."""
@@ -462,9 +500,12 @@ class Engine:
             self._llm_key = key
         return self._llm
 
-    def stream_answer(self, question: str):
+    def stream_answer(self, question: str, chat_id: str | None = None, history: list | None = None):
         """Yields (event, data) pairs for the chat stream."""
         s = self.settings
+        if s["mode"] == "folder":
+            yield from self._stream_folder(question, chat_id or "default", history or [])
+            return
         if self.store is None:
             msg = self.index.get("error") or "Add a document first, then ask."
             yield "error", {"message": msg}
@@ -526,6 +567,118 @@ class Engine:
                     text = _text(msg.content)
                     if text:
                         yield "token", {"text": text}
+
+    # ----- folder agent -----
+    def _folder_session(self, chat_id: str, history: list):
+        """The agent session for one chat, rebuilt when the folder, model or approval mode changes."""
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        from vesper.coder import Session
+        from vesper.workspace import Workspace
+
+        s = self.settings
+        key = (s["workspace"], s["provider"], s["model"], s["embeddings"])
+        with self._sessions_lock:
+            entry = self._sessions.get(chat_id)
+            if entry is not None and entry["key"] == key:
+                self._sessions.move_to_end(chat_id)
+                entry["session"].workspace.mode = s["agent_mode"]
+                return entry
+            emb = s["embeddings"]
+            ws = Workspace(Path(s["workspace"]), mode=s["agent_mode"],
+                           embeddings_factory=lambda: prov.get_embeddings(emb, s["embed_model"] or None))
+            session = Session(self.llm(), ws)
+            if entry is not None:
+                session.history = entry["session"].history  # same chat, new model or folder
+            else:
+                for turn in history[-MAX_HISTORY_TURNS:]:
+                    text = str(turn.get("text", ""))[:20000] if isinstance(turn, dict) else ""
+                    if text:
+                        session.history.append(HumanMessage(text) if turn.get("role") == "user" else AIMessage(text))
+            entry = {"key": key, "session": session, "lock": threading.Lock()}
+            self._sessions[chat_id] = entry
+            while len(self._sessions) > MAX_SESSIONS:
+                self._sessions.popitem(last=False)
+            return entry
+
+    def _stream_folder(self, question: str, chat_id: str, history: list):
+        s = self.settings
+        if not s["workspace"]:
+            yield "error", {"message": "Open a folder first: click the folder button at the top."}
+            yield "done", {}
+            return
+        try:
+            entry = self._folder_session(chat_id, history)
+        except Exception as exc:
+            yield "error", {"message": friendly_error(exc, s["provider"])}
+            yield "done", {}
+            return
+        if not entry["lock"].acquire(blocking=False):
+            yield "error", {"message": "This chat is still answering. Wait for it or stop it first."}
+            yield "done", {}
+            return
+
+        events: queue.Queue = queue.Queue()
+        closed = threading.Event()
+        mine: list[str] = []
+        session = entry["session"]
+
+        def approve(action: dict) -> str:
+            if closed.is_set():
+                return "no"
+            aid = secrets.token_hex(8)
+            slot = {"event": threading.Event(), "answer": "no"}
+            self._approvals[aid] = slot
+            mine.append(aid)
+            events.put(("approval", {"id": aid, **action}))
+            answered = slot["event"].wait(APPROVAL_TIMEOUT_S)
+            self._approvals.pop(aid, None)
+            if not answered:
+                events.put(("approval_done", {"id": aid, "answer": "no", "timeout": True}))
+            return slot["answer"] if answered and not closed.is_set() else "no"
+
+        session.workspace.approve = approve
+
+        def work():
+            try:
+                for item in session.ask(question):
+                    if item[0] != "done":
+                        events.put(item)
+            except Exception as exc:
+                traceback.print_exc()
+                events.put(("error", {"message": friendly_error(exc, s["provider"])}))
+            finally:
+                events.put(None)
+                entry["lock"].release()
+
+        threading.Thread(target=work, daemon=True).start()
+        try:
+            while True:
+                item = events.get()
+                if item is None:
+                    break
+                yield item
+        finally:
+            # The client went away or the answer ended: refuse anything still waiting.
+            closed.set()
+            for aid in mine:
+                slot = self._approvals.pop(aid, None)
+                if slot is not None:
+                    slot["answer"] = "no"
+                    slot["event"].set()
+        yield "done", {}
+
+    def answer_approval(self, aid: str, answer: str) -> bool:
+        slot = self._approvals.get(aid)
+        if slot is None:
+            return False
+        slot["answer"] = answer
+        slot["event"].set()
+        return True
+
+    def forget_chat(self, chat_id: str) -> None:
+        with self._sessions_lock:
+            self._sessions.pop(chat_id, None)
 
     # ----- view -----
     def state(self) -> dict:
@@ -615,13 +768,36 @@ def create_app(token: str, engine: Engine | None = None, allowed_hosts=None) -> 
             raise HTTPException(400, "empty question")
         if len(question) > MAX_QUESTION_CHARS:
             raise HTTPException(400, f"The question is longer than {MAX_QUESTION_CHARS} characters.")
+        chat_id = body.get("chat_id") or "default"
+        if not isinstance(chat_id, str) or not CHAT_ID.match(chat_id):
+            raise HTTPException(400, "chat_id must be 1-64 letters, digits, - or _.")
+        history = body.get("history") or []
+        if not isinstance(history, list):
+            raise HTTPException(400, "history must be a list.")
 
         def events():
-            for event, data in engine.stream_answer(question):
+            for event, data in engine.stream_answer(question, chat_id, history):
                 yield f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
         return StreamingResponse(events(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
+
+    @app.post("/api/approve", dependencies=[Depends(auth)])
+    async def approve(request: Request):
+        body = await json_body(request)
+        aid = body.get("id") if isinstance(body, dict) else None
+        answer = body.get("answer") if isinstance(body, dict) else None
+        if not isinstance(aid, str) or answer not in ("yes", "always", "no"):
+            raise HTTPException(400, "Send an id and an answer: yes, always or no.")
+        if not engine.answer_approval(aid, answer):
+            raise HTTPException(404, "That request is no longer waiting.")
+        return {"ok": True}
+
+    @app.delete("/api/chats/{chat_id}", dependencies=[Depends(auth)])
+    def forget_chat(chat_id: str):
+        if CHAT_ID.match(chat_id):
+            engine.forget_chat(chat_id)
+        return {"ok": True}
 
     app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
     if (WEB_DIR / "assets").is_dir():  # Vite/React build output

@@ -1,7 +1,7 @@
 {
   "name": "vesper-desktop",
   "productName": "Vesper",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "private": true,
   "description": "Vesper desktop app: chat with your documents.",
   "author": "Karim Masmoudi",

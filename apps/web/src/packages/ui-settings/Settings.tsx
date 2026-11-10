@@ -1,12 +1,14 @@
 import { useEffect, useRef, useState, type DragEvent, type ReactNode } from 'react'
-import type { Provider } from '../connection/api'
+import type { AgentMode, Provider } from '../connection/api'
 import {
-  closeSettings, getState, removeDoc, saveSettings, setAppearance, setSettingsTab, uploadFiles, useStore, type SettingsTab,
+  canPickFolder, closeSettings, getState, openFolder, pickFolder, removeDoc, saveSettings, setAppearance, setSettingsTab,
+  uploadFiles, useStore, type SettingsTab,
 } from '../store/store'
 import { EFFECTS, type EffectChoice, type Phosphor, type ThemeChoice } from '../ui-theme/appearance'
 import { Icon, type IconName } from '../ui-primitives/Icon'
 
 const TABS: { id: SettingsTab; label: string; icon: IconName }[] = [
+  { id: 'folder', label: 'Folder', icon: 'folder' },
   { id: 'models', label: 'Models', icon: 'key' },
   { id: 'documents', label: 'Documents', icon: 'doc' },
   { id: 'retrieval', label: 'Retrieval', icon: 'sliders' },
@@ -20,6 +22,44 @@ function Section({ title, desc, children }: { title: string; desc?: string; chil
       {desc && <p className="set-desc">{desc}</p>}
       {children}
     </section>
+  )
+}
+
+// ---------------- Folder ----------------
+const AGENT_MODES: { id: AgentMode; label: string; hint: string }[] = [
+  { id: 'ask', label: 'Ask first', hint: 'Reads freely. Asks before every edit and every command.' },
+  { id: 'auto-edit', label: 'Auto-edit', hint: 'Edits files without asking. Still asks before running commands.' },
+  { id: 'yolo', label: 'Full access', hint: 'Edits and runs commands without asking. Only for folders you can afford to lose.' },
+]
+
+function FolderTab() {
+  const server = useStore(s => s.server)
+  const [path, setPath] = useState(server?.settings.workspace ?? '')
+  const saved = server?.settings.workspace ?? ''
+  useEffect(() => setPath(saved), [saved])
+  if (!server) return null
+  const s = server.settings
+  return (
+    <>
+      <Section title="Working folder" desc="Vesper reads, searches, edits and runs commands inside this folder, and nowhere else. PDFs, Markdown and text files in it can be searched with citations.">
+        <form className="key-input" onSubmit={e => { e.preventDefault(); if (path.trim()) void openFolder(path.trim()) }}>
+          <input className="input mono" value={path} onChange={e => setPath(e.target.value)} placeholder="/Users/you/projects/my-app" aria-label="Folder path" spellCheck={false} />
+          {canPickFolder() && <button type="button" className="btn ghost" onClick={() => void pickFolder()}><Icon name="folder" size={14} /> Browse</button>}
+          <button type="submit" className="btn primary" disabled={!path.trim() || path.trim() === saved}>Open</button>
+        </form>
+      </Section>
+      <Section title="Permissions" desc="What the agent may do on its own. You can change this at any time, even mid-chat.">
+        <div className="mode-list">
+          {AGENT_MODES.map(m => (
+            <button type="button" key={m.id} className={`mode-card${s.agent_mode === m.id ? ' on' : ''}${m.id === 'yolo' ? ' risky' : ''}`}
+              aria-pressed={s.agent_mode === m.id} onClick={() => void saveSettings({ agent_mode: m.id })}>
+              <Icon name={m.id === 'yolo' ? 'warn' : 'shield'} size={15} />
+              <span><strong>{m.label}</strong><small>{m.hint}</small></span>
+            </button>
+          ))}
+        </div>
+      </Section>
+    </>
   )
 }
 
@@ -79,7 +119,7 @@ function ModelsTab() {
   const local = server.providers.filter(p => p.local)
   return (
     <>
-      <Section title="Answer mode" desc="Graph runs retrieve then generate. Agent lets the model decide when and what to search.">
+      <Section title="Docs mode" desc="How Vesper answers from the documents you added. Graph runs retrieve then generate. Agent lets the model decide when and what to search.">
         <div className="segmented">
           {(['graph', 'agent'] as const).map(m => (
             <button type="button" key={m} className={server.settings.mode === m ? 'on' : ''} onClick={() => void saveSettings({ mode: m })}>
@@ -327,6 +367,7 @@ export function Settings() {
             <button type="button" className="icon-btn" onClick={closeSettings} aria-label="Close settings"><Icon name="close" size={16} /></button>
           </header>
           <div className="set-scroll">
+            {tab === 'folder' && <FolderTab />}
             {tab === 'models' && <ModelsTab />}
             {tab === 'documents' && <DocumentsTab />}
             {tab === 'retrieval' && <RetrievalTab />}

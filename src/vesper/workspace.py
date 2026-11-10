@@ -182,14 +182,14 @@ class Workspace:
         try:
             reader = PdfReader(str(p))
             total = len(reader.pages)
-        except Exception as exc:  # noqa: BLE001 - malformed PDFs raise many types
+        except Exception as exc:
             raise ToolError(f"Could not read {self.rel(p)} as a PDF: {exc}") from None
         pages = min(pages, 30)
         out = []
         for n in range(first_page, min(total, first_page + pages - 1) + 1):
             try:
                 text = reader.pages[n - 1].extract_text() or ""
-            except Exception:  # noqa: BLE001
+            except Exception:
                 text = "(this page could not be read)"
             out.append(f"[page {n}]\n{text.strip()}")
         if not out:
@@ -351,7 +351,7 @@ class Workspace:
             for p in self.doc_files():
                 try:
                     loaded = load_documents(p, warnings=[])
-                except Exception:  # noqa: BLE001 - one unreadable file must not stop the search
+                except Exception:
                     continue
                 for d in loaded:
                     d.metadata["source"] = self.rel(p)

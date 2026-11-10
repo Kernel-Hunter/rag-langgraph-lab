@@ -150,13 +150,34 @@ def _fake_chat_model():
     import itertools
 
     from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-    from langchain_core.messages import AIMessage
+    from langchain_core.messages import AIMessage, ToolMessage
+    from langchain_core.outputs import ChatGeneration, ChatResult
 
     class FakeChat(GenericFakeChatModel):
-        """Streams FAKE_ANSWER word by word. bind_tools is a no-op so agent mode answers directly."""
+        """Streams FAKE_ANSWER word by word. With the folder tools bound it plays a short script
+        instead (list the folder, write a note, answer) so the tool and approval UI can be tested."""
+
+        folder: bool = False
 
         def bind_tools(self, tools, **kwargs):
+            names = {getattr(t, "name", "") for t in tools}
+            if "write_file" in names:
+                return FakeChat(messages=self.messages, folder=True, disable_streaming=True)
             return self
+
+        def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+            if not self.folder:
+                return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+            last = messages[-1] if messages else None
+            if not isinstance(last, ToolMessage):
+                msg = AIMessage(content="Let me look at the folder first.",
+                                tool_calls=[{"name": "list_files", "args": {"path": "."}, "id": "fake-list"}])
+            elif last.name == "list_files":
+                msg = AIMessage(content="", tool_calls=[{"name": "write_file", "id": "fake-write", "args": {
+                    "path": "vesper-notes.md", "content": "# Notes\n\nWritten by the Vesper demo model.\n"}}])
+            else:
+                msg = AIMessage(content=f"Done. The write said: {last.content}")
+            return ChatResult(generations=[ChatGeneration(message=msg)])
 
     return FakeChat(messages=itertools.repeat(AIMessage(content=FAKE_ANSWER)))
 

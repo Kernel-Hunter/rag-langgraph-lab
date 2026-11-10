@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { currentChat, openSettings, send, useStore } from '../store/store'
+import { currentChat, folderName, openSettings, pickFolder, send, useStore } from '../store/store'
 import { Icon } from '../ui-primitives/Icon'
 import { LogoMark } from '../ui-primitives/Logo'
 import { Message } from './Message'
@@ -11,16 +11,60 @@ const SUGGESTIONS = [
   'List the grading criteria with page numbers',
 ]
 
+const FOLDER_SUGGESTIONS = [
+  'Explain what this project does and how it is organized',
+  'Find bugs in this code and fix the worst one',
+  'Summarize every PDF in this folder',
+  'Write a README for this folder',
+]
+
+function FolderEmpty({ workspace, terminal }: { workspace: string; terminal: boolean }) {
+  return (
+    <div className="empty">
+      <LogoMark size={56} className="empty-logo" />
+      {terminal ? (
+        <pre className="boot" aria-label="Vesper ready">{`VESPER v0.4 :: folder agent
+> cwd ................ ${workspace || '(none)'}
+> tools .............. read, search, edit, run
+> type a task and press ENTER`}</pre>
+      ) : (
+        <>
+          <h1>{workspace ? `What should we do in ${folderName(workspace)}?` : 'Open a folder to start'}</h1>
+          <p className="sub">
+            {workspace
+              ? 'Vesper can read and search every file here, edit code and documents, and run commands. It asks before changing anything.'
+              : 'Pick a project, a folder of notes or a folder of PDFs. Vesper works inside it, like a teammate at your keyboard.'}
+          </p>
+        </>
+      )}
+      {workspace ? (
+        <div className="suggestions">
+          {FOLDER_SUGGESTIONS.map(q => (
+            <button type="button" key={q} className="suggestion" onClick={() => void send(q)}>
+              <Icon name="spark" size={14} />{q}
+            </button>
+          ))}
+        </div>
+      ) : (
+        <button type="button" className="btn primary" onClick={() => void pickFolder()}>
+          <Icon name="folder" size={15} /> Open folder
+        </button>
+      )}
+    </div>
+  )
+}
+
 function Empty() {
   const server = useStore(s => s.server)
   const theme = useStore(s => s.appearance.theme)
   const idx = server?.index
   const docs = server?.docs.length ?? 0
+  if (server?.settings.mode === 'folder') return <FolderEmpty workspace={server.settings.workspace} terminal={theme === 'terminal'} />
   return (
     <div className="empty">
       <LogoMark size={56} className="empty-logo" />
       {theme === 'terminal' ? (
-        <pre className="boot" aria-label="Vesper ready">{`VESPER v0.3 :: retrieval shell
+        <pre className="boot" aria-label="Vesper ready">{`VESPER v0.4 :: docs shell
 > docs loaded ........ ${docs}
 > chunks indexed ..... ${idx?.chunks ?? 0}
 > status ............. ${(idx?.status ?? 'connecting').toUpperCase()}

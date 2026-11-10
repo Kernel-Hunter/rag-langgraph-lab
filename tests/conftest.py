@@ -8,7 +8,7 @@ import tempfile
 # Before anything imports vesper: never read, migrate or write the real ~/.vesper or ~/.rag-lab.
 os.environ["VESPER_HOME"] = tempfile.mkdtemp(prefix="vesper-tests-")
 
-import pytest  # noqa: E402
+import pytest
 from fastapi.testclient import TestClient
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
 
@@ -28,7 +28,7 @@ def _restore_environ():
 def home(tmp_path, monkeypatch):
     monkeypatch.setenv("VESPER_HOME", str(tmp_path))
     monkeypatch.delenv("VESPER_FAKE_LLM", raising=False)
-    (tmp_path / "config.json").write_text(json.dumps({"embeddings": "fake", "provider": "ollama"}))
+    (tmp_path / "config.json").write_text(json.dumps({"embeddings": "fake", "provider": "ollama", "mode": "graph"}))
     return tmp_path
 
 

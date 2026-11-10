@@ -1,0 +1,36 @@
+name: Bug report
+description: Something does not work the way it should
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you ran or clicked, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Vesper version
+      description: Output of `vesper --version`.
+    validations:
+      required: true
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where
+      options: [Terminal (vesper), Desktop app, Both]
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: Operating system and model provider
+      placeholder: macOS 15, Ollama qwen2.5:7b-instruct
+  - type: textarea
+    id: logs
+    attributes:
+      label: Error output
+      description: Paste any error text. Remove API keys first.
+      render: text

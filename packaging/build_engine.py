@@ -29,7 +29,7 @@ WORK = ROOT / "build" / "engine"
 # Ship the local embedding model so the first launch needs no download.
 os.environ["VESPER_HOME"] = MODEL_HOME = tempfile.mkdtemp(prefix="vesper-build-")
 sys.path.insert(0, str(ROOT / "src"))
-from vesper.providers import LocalEmbeddings  # noqa: E402
+from vesper.providers import LocalEmbeddings
 
 LocalEmbeddings().embed_query("warm up")
 # The Hugging Face cache links snapshot files to blobs with symlinks (also on the

@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react'
-import { currentChat, saveSettings, send, stop, useStore } from '../store/store'
+import { currentChat, openSettings, saveSettings, send, stop, useStore } from '../store/store'
 import { Icon } from '../ui-primitives/Icon'
 import { ModelPicker } from '../ui-model-selection/ModelPicker'
 
@@ -14,6 +14,7 @@ export function Composer() {
   const providers = useStore(s => s.server?.providers)
   const chatId = useStore(s => currentChat(s)?.id ?? null)
   const theme = useStore(s => s.appearance.theme)
+  const folder = settings?.mode === 'folder'
 
   const provider = providers?.find(p => p.id === settings?.provider)
   const model = settings?.model || provider?.chat_model || ''
@@ -61,7 +62,9 @@ export function Composer() {
           value={text}
           onChange={e => setText(e.target.value)}
           onKeyDown={onKey}
-          placeholder={theme === 'terminal' ? 'query --docs ./all' : 'Ask about your documents'}
+          placeholder={folder
+            ? (theme === 'terminal' ? 'task --here' : 'Ask Vesper to read, change or run something')
+            : (theme === 'terminal' ? 'query --docs ./all' : 'Ask about your documents')}
           aria-label="Question"
           spellCheck
         />
@@ -72,6 +75,12 @@ export function Composer() {
               <span className="chip-label">{provider ? `${provider.label} · ${model}` : 'Choose model'}</span>
               <Icon name="chevron" size={13} />
             </button>
+            {folder ? (
+              <button type="button" className="chip-btn" onClick={() => openSettings('folder')} title="What the agent may do without asking">
+                <Icon name={settings?.agent_mode === 'yolo' ? 'warn' : 'shield'} size={14} />
+                {settings?.agent_mode === 'yolo' ? 'Full access' : settings?.agent_mode === 'auto-edit' ? 'Auto-edit' : 'Ask first'}
+              </button>
+            ) : (
             <button
               type="button"
               className={`chip-btn toggle${settings?.check ? ' on' : ''}`}
@@ -82,6 +91,7 @@ export function Composer() {
             >
               <Icon name="check" size={14} /> Verify
             </button>
+            )}
           </div>
           <div className="composer-right">
             {tooLong && <span className="count err">{text.length}/{MAX_LEN}</span>}
@@ -98,7 +108,11 @@ export function Composer() {
         </div>
         {picker && <ModelPicker onClose={() => setPicker(false)} />}
       </form>
-      <p className="hint">Answers come only from your documents. Check important details on the cited page.</p>
+      <p className="hint">
+        {folder
+          ? 'Vesper can make mistakes. Read each change before you allow it.'
+          : 'Answers come only from your documents. Check important details on the cited page.'}
+      </p>
     </div>
   )
 }

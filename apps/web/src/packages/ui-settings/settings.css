@@ -114,3 +114,20 @@
   .effect-grid { grid-template-columns: repeat(2, 1fr); }
   .set-scroll { padding: 4px 16px 20px; } .set-head { padding-left: 16px; }
 }
+
+.input.mono { font-family: var(--mono); font-size: 12.5px; }
+.mode-list { display: flex; flex-direction: column; gap: 8px; }
+.mode-card {
+  display: flex; align-items: flex-start; gap: 10px; text-align: left; padding: 11px 13px;
+  border-radius: var(--r-md); border: 1px solid var(--line); background: var(--layer-1); color: var(--text-2);
+  transition: border-color var(--t-fast), background var(--t-fast);
+}
+.mode-card svg { margin-top: 2px; flex: none; }
+.mode-card span { display: flex; flex-direction: column; gap: 2px; }
+.mode-card strong { color: var(--text); font-size: 13.5px; font-weight: 600; }
+.mode-card small { font-size: 12.5px; color: var(--text-3); }
+.mode-card:hover { border-color: var(--line-2); }
+.mode-card.on { border-color: var(--accent); background: var(--accent-soft); }
+.mode-card.on svg { color: var(--accent); }
+.mode-card.risky.on { border-color: var(--warn); background: color-mix(in srgb, var(--warn) 10%, transparent); }
+.mode-card.risky.on svg { color: var(--warn); }

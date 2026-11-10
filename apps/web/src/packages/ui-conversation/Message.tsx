@@ -1,6 +1,7 @@
 import { memo, useMemo, useState, type MouseEvent } from 'react'
 import type { Msg } from '../store/store'
 import { retry, toast } from '../store/store'
+import { ToolRow } from './ToolRow'
 import { Icon } from '../ui-primitives/Icon'
 import { LogoMark } from '../ui-primitives/Logo'
 import { renderMarkdown } from './markdown'
@@ -56,8 +57,23 @@ function UserMessage({ msg }: { msg: Msg }) {
 function BotMessage({ msg, chatId, last }: { msg: Msg; chatId: string; last: boolean }) {
   const [open, setOpen] = useState(false)
   const [hl, setHl] = useState<string | null>(null)
-  const html = useMemo(() => renderMarkdown(msg.text), [msg.text])
-  const thinking = msg.streaming && !msg.text && !msg.error
+  // Text and tool calls in the order they happened: text, tool, text, tool, ...
+  const parts = useMemo(() => {
+    const out: ({ kind: 'text'; html: string; key: string } | { kind: 'tool'; index: number; key: string })[] = []
+    let from = 0
+    const tools = msg.tools.map((t, index) => ({ t, index })).sort((a, b) => a.t.at - b.t.at)
+    for (const { t, index } of tools) {
+      const at = Math.min(Math.max(t.at, from), msg.text.length)
+      if (at > from && msg.text.slice(from, at).trim()) out.push({ kind: 'text', html: renderMarkdown(msg.text.slice(from, at)), key: `x${from}` })
+      out.push({ kind: 'tool', index, key: `t${t.id}` })
+      from = at
+    }
+    if (msg.text.slice(from).trim()) out.push({ kind: 'text', html: renderMarkdown(msg.text.slice(from)), key: `x${from}` })
+    return out
+  }, [msg.text, msg.tools])
+  const lastText = parts.map(p => p.kind).lastIndexOf('text')
+  const running = msg.tools.some(t => t.output === undefined)
+  const thinking = msg.streaming && !msg.error && !running && (parts.length === 0 || parts[parts.length - 1]?.kind === 'tool')
 
   const onClick = (e: MouseEvent<HTMLDivElement>): void => {
     const el = (e.target as HTMLElement).closest<HTMLElement>('.cite')
@@ -74,24 +90,29 @@ function BotMessage({ msg, chatId, last }: { msg: Msg; chatId: string; last: boo
     <div className="msg bot">
       <div className="avatar" aria-hidden="true"><LogoMark size={22} /></div>
       <div className="body">
-        {thinking && (
-          <div className="thinking">
-            <span className="shimmer">
-              {msg.searches.length ? `Searching “${msg.searches[msg.searches.length - 1]}”` : msg.sources.length ? 'Reading the pages' : 'Searching your documents'}
-            </span>
-          </div>
-        )}
         {!!msg.searches.length && !thinking && (
           <div className="searches">
             {msg.searches.map((q, i) => <span key={i} className="search-chip"><Icon name="search" size={12} />{q}</span>)}
           </div>
         )}
-        {msg.text && (
-          <div
-            className={`md${msg.streaming ? ' cursor' : ''}`}
-            onClick={onClick}
-            dangerouslySetInnerHTML={{ __html: html }}
-          />
+        {parts.map((p, i) => (p.kind === 'tool'
+          ? <ToolRow key={p.key} step={msg.tools[p.index]!} chatId={chatId} msgId={msg.id} />
+          : (
+            <div
+              key={p.key}
+              className={`md${msg.streaming && i === lastText && i === parts.length - 1 ? ' cursor' : ''}`}
+              onClick={onClick}
+              dangerouslySetInnerHTML={{ __html: p.html }}
+            />
+          )))}
+        {thinking && (
+          <div className="thinking">
+            <span className="shimmer">
+              {msg.tools.length ? 'Thinking'
+                : msg.searches.length ? `Searching “${msg.searches[msg.searches.length - 1]}”`
+                  : msg.sources.length ? 'Reading the pages' : 'Working on it'}
+            </span>
+          </div>
         )}
         {msg.error && (
           <div className="msg-error" role="alert">

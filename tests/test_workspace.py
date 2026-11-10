@@ -163,3 +163,69 @@ def test_session_runs_tools_and_streams(ws):
     assert len(session.history) > n  # history carries over
     session.clear()
     assert session.history == []
+
+
+# ---------------------------------------------------------------- desktop engine: folder mode
+def _folder_engine(server, tmp_path, monkeypatch, replies):
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / "a.txt").write_text("old\n")
+    engine = server.Engine()
+    engine.update({"mode": "folder", "workspace": str(proj)})
+    llm = ToolFake(disable_streaming=True, messages=iter(replies))
+    monkeypatch.setattr(engine, "llm", lambda: llm)
+    return engine, proj
+
+
+def test_engine_folder_mode_approval_roundtrip(server, tmp_path, monkeypatch):
+    import threading
+
+    engine, proj = _folder_engine(server, tmp_path, monkeypatch, [
+        AIMessage(content="", tool_calls=[{"name": "edit_file", "id": "e1", "args": {
+            "path": "a.txt", "old_string": "old", "new_string": "new"}}]),
+        AIMessage(content="Changed it."),
+    ])
+    gen = engine.stream_answer("change it", "chat1", [])
+    seen = []
+    for event, data in gen:
+        seen.append(event)
+        if event == "approval":
+            assert data["path"] == "a.txt" and "+new" in data["diff"]
+            threading.Timer(0.05, engine.answer_approval, (data["id"], "yes")).start()
+    assert "tool_start" in seen and "tool_end" in seen and seen[-1] == "done"
+    assert (proj / "a.txt").read_text() == "new\n"
+    assert engine.answer_approval("nope", "yes") is False
+
+
+def test_engine_folder_mode_refuses_when_client_leaves(server, tmp_path, monkeypatch):
+    engine, proj = _folder_engine(server, tmp_path, monkeypatch, [
+        AIMessage(content="", tool_calls=[{"name": "run_command", "id": "r1", "args": {"command": "echo hi > x.txt"}}]),
+        AIMessage(content="ok"),
+    ])
+    gen = engine.stream_answer("run it", "chat2", [])
+    for event, _ in gen:
+        if event == "approval":
+            gen.close()  # the window closed while the approval card was showing
+            break
+    import time
+
+    time.sleep(0.3)
+    assert not (proj / "x.txt").exists()
+
+
+def test_engine_folder_needs_a_folder(server):
+    engine = server.Engine()
+    engine.update({"mode": "folder", "workspace": ""})
+    events = list(engine.stream_answer("hi", "c", []))
+    assert events[0][0] == "error" and "folder" in events[0][1]["message"]
+
+
+@pytest.mark.parametrize("value", ["relative/path", "/definitely/not/here", 5])
+def test_workspace_setting_validated(client, value):
+    assert client.post("/api/settings", json={"workspace": value}).status_code == 400
+
+
+def test_approve_endpoint_validates(client):
+    assert client.post("/api/approve", json={"id": "x", "answer": "maybe"}).status_code == 400
+    assert client.post("/api/approve", json={"id": "x", "answer": "yes"}).status_code == 404
+    assert client.post("/api/chat", json={"question": "hi", "chat_id": "../../x"}).status_code == 400

@@ -11,7 +11,6 @@ import pytest
 
 from vesper import indexing
 
-
 # ----- sample handbook is seeded once -----
 
 def test_sample_seeded_once(server):

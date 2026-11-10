@@ -20,8 +20,29 @@ export interface Settings {
   chunk_size: number
   chunk_overlap: number
   k: number
-  mode: 'graph' | 'agent'
+  mode: 'folder' | 'graph' | 'agent'
   check: boolean
+  workspace: string
+  agent_mode: AgentMode
+}
+
+export type AgentMode = 'ask' | 'auto-edit' | 'yolo'
+
+export interface ApprovalRequest {
+  id: string
+  kind: 'edit' | 'run'
+  tool: string
+  path?: string
+  diff?: string
+  command?: string
+  cwd?: string
+}
+
+export type ApprovalAnswer = 'yes' | 'always' | 'no'
+
+export interface ChatTurn {
+  role: 'user' | 'bot'
+  text: string
 }
 
 export interface IndexState {
@@ -52,6 +73,10 @@ export type StreamEvent =
   | { event: 'token'; data: { text: string } }
   | { event: 'check'; data: { supported: boolean } }
   | { event: 'error'; data: { message: string } }
+  | { event: 'tool_start'; data: { id: string | null; name: string; args: Record<string, unknown> } }
+  | { event: 'tool_end'; data: { id: string | null; name: string; output: string; ok: boolean } }
+  | { event: 'approval'; data: ApprovalRequest }
+  | { event: 'approval_done'; data: { id: string; answer: ApprovalAnswer; timeout?: boolean } }
   | { event: 'done'; data: Record<string, never> }
 
 /** Token from the URL hash (#token=...), kept for the session and removed from the address bar. */
@@ -106,10 +131,20 @@ export const api = {
   removeDoc: async (name: string): Promise<ServerState> =>
     (await request(`/api/docs/${encodeURIComponent(name)}`, { method: 'DELETE' })).json(),
   reindex: async (): Promise<ServerState> => (await request('/api/reindex', { method: 'POST' })).json(),
+  approve: async (id: string, answer: ApprovalAnswer): Promise<void> => {
+    await request('/api/approve', { method: 'POST', json: { id, answer } })
+  },
+  forgetChat: async (chatId: string): Promise<void> => {
+    await request(`/api/chats/${encodeURIComponent(chatId)}`, { method: 'DELETE' })
+  },
 
   /** Streams one answer. Calls onEvent for each event; resolves when the stream ends. */
-  async chat(question: string, onEvent: (e: StreamEvent) => void, signal: AbortSignal): Promise<void> {
-    const res = await request('/api/chat', { method: 'POST', json: { question }, signal })
+  async chat(
+    body: { question: string; chat_id: string; history: ChatTurn[] },
+    onEvent: (e: StreamEvent) => void,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const res = await request('/api/chat', { method: 'POST', json: body, signal })
     if (!res.body) throw new ApiError('No response stream', 0)
     const reader = res.body.getReader()
     const decoder = new TextDecoder()

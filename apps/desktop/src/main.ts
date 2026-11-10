@@ -12,6 +12,7 @@ import {
   app,
   BrowserWindow,
   dialog,
+  ipcMain,
   Menu,
   nativeTheme,
   session,
@@ -37,7 +38,7 @@ if (SMOKE) {
   rmSync(smokeUserData, { recursive: true, force: true })
   app.setPath('userData', smokeUserData)
   app.commandLine.appendSwitch('disable-http-cache')
-  engineEnv = { ...process.env, VESPER_FAKE_LLM: '1', VESPER_HOME: smokeHome, VESPER_HOME: smokeHome }
+  engineEnv = { ...process.env, VESPER_FAKE_LLM: '1', VESPER_HOME: smokeHome }
 }
 
 const engine = new Engine(engineEnv)
@@ -93,6 +94,7 @@ function createWindow(info: EngineInfo, show = true): BrowserWindow {
       webviewTag: false,
       devTools: !app.isPackaged,
       spellcheck: false,
+      preload: join(__dirname, 'preload.js'),
     },
   })
   if (show) window.once('ready-to-show', () => window.show())
@@ -132,6 +134,15 @@ function createWindow(info: EngineInfo, show = true): BrowserWindow {
   void window.loadURL(info.url)
   return window
 }
+
+// Native folder picker for the page (see preload.ts). Only our own page may ask.
+ipcMain.handle('vesper:pick-folder', async (event) => {
+  if (!sameOrigin(event.senderFrame?.url ?? '')) return null
+  const owner = BrowserWindow.fromWebContents(event.sender)
+  const options = { title: 'Open a folder', properties: ['openDirectory' as const, 'createDirectory' as const] }
+  const result = owner ? await dialog.showOpenDialog(owner, options) : await dialog.showOpenDialog(options)
+  return result.canceled ? null : (result.filePaths[0] ?? null)
+})
 
 function lockDownSession(): void {
   const ses = session.defaultSession

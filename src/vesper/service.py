@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 
-from vesper.indexing import load_documents, split_documents, build_vector_store
+from vesper.indexing import build_vector_store, load_documents, split_documents
 from vesper.providers import get_embeddings, get_llm
 
 

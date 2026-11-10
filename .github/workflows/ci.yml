@@ -23,8 +23,17 @@ jobs:
         shell: bash
         run: |
           if [ "$RUNNER_OS" = "Linux" ]; then xvfb-run -a pytest -q -rs; else pytest -q -rs; fi
-      - name: CLI entry point works
-        run: rag-lab --help
+      - name: CLI entry points work
+        run: |
+          vesper --version
+          vesper --help
+          rag-lab --help
+      - name: Print mode answers offline with the fake model
+        shell: bash
+        env:
+          VESPER_FAKE_LLM: "1"
+          VESPER_HOME: ${{ runner.temp }}/vesper-home
+        run: vesper -C . "hello" 
 
   web:
     runs-on: ubuntu-latest

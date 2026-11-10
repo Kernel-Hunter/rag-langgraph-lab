@@ -1,25 +1,29 @@
 import { useId } from 'react'
 
-/** Vesper mark: a page with a folded corner and a spark lifting off the fold. */
+/** Vesper mark: the evening star rising over the horizon, with a smaller star beside it. */
 export function LogoMark({ size = 30, className }: { size?: number; className?: string }) {
   const id = useId().replace(/:/g, '')
   return (
     <svg className={className} width={size} height={size} viewBox="0 0 64 64" aria-hidden="true" style={{ stroke: 'none' }}>
       <defs>
-        <linearGradient id={`pg-${id}`} x1="0" y1="0" x2="1" y2="1">
+        <linearGradient id={`vg-${id}`} x1="0" y1="0" x2="1" y2="1">
           <stop offset="0" style={{ stopColor: 'var(--accent)' }} />
           <stop offset="1" style={{ stopColor: 'var(--accent-2)' }} />
         </linearGradient>
       </defs>
-      <path d="M17 10h19l13 13v28a6 6 0 0 1-6 6H17a6 6 0 0 1-6-6V16a6 6 0 0 1 6-6z" fill={`url(#pg-${id})`} />
-      <path d="M36 10v9a4 4 0 0 0 4 4h9z" fill="var(--accent-ink)" opacity=".38" />
-      <rect x="19" y="30" width="22" height="4" rx="2" fill="var(--accent-ink)" opacity=".72" />
-      <rect x="19" y="38" width="22" height="4" rx="2" fill="var(--accent-ink)" opacity=".72" />
-      <rect x="19" y="46" width="13" height="4" rx="2" fill="var(--accent-ink)" opacity=".72" />
-      <path d="M54 2.5l1.9 5 5 1.9-5 1.9-1.9 5-1.9-5-5-1.9 5-1.9z" fill={`url(#pg-${id})`} />
+      <path d={STAR} fill={`url(#vg-${id})`} />
+      <path d={SMALL_STAR} fill={`url(#vg-${id})`} opacity=".85" />
+      <path d="M6 55 Q32 44 58 55" fill="none" stroke={`url(#vg-${id})`} strokeWidth="4.5" strokeLinecap="round" />
     </svg>
   )
 }
+
+// Four-point stars with curved (concave) sides. Shared with packaging/make_icon.py.
+const star = (cx: number, cy: number, r: number, k: number): string =>
+  `M${cx} ${cy - r}Q${cx + k} ${cy - k} ${cx + r} ${cy}Q${cx + k} ${cy + k} ${cx} ${cy + r}` +
+  `Q${cx - k} ${cy + k} ${cx - r} ${cy}Q${cx - k} ${cy - k} ${cx} ${cy - r}z`
+const STAR = star(31, 25, 20, 3.6)
+const SMALL_STAR = star(51, 11, 6.5, 1.3)
 
 export function Wordmark() {
   return (

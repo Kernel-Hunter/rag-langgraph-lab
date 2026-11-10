@@ -1,4 +1,4 @@
-import { currentChat, openSettings, refresh, saveSettings, toggleSidebar, useStore } from '../store/store'
+import { currentChat, folderName, openSettings, pickFolder, refresh, saveSettings, toggleSidebar, useStore } from '../store/store'
 import { Icon } from '../ui-primitives/Icon'
 
 function Status() {
@@ -27,6 +27,7 @@ function Status() {
 export function Topbar() {
   const title = useStore(s => currentChat(s)?.title ?? '')
   const mode = useStore(s => s.server?.settings.mode)
+  const workspace = useStore(s => s.server?.settings.workspace ?? '')
   const sidebar = useStore(s => s.sidebar)
   return (
     <header className="topbar drag">
@@ -35,15 +36,21 @@ export function Topbar() {
       </button>
       <div className="top-title" title={title}>{title}</div>
       <div className="top-right">
-        <Status />
+        {mode === 'folder' ? (
+          <button type="button" className={`status folder${workspace ? ' ok' : ''}`} onClick={() => void pickFolder()} title={workspace || 'Open a folder'}>
+            <Icon name="folder" size={13} />{workspace ? folderName(workspace) : 'Open folder'}
+          </button>
+        ) : <Status />}
         {mode && (
-          <div className="segmented mini" role="group" aria-label="Answer mode">
-            {(['graph', 'agent'] as const).map(m => (
-              <button type="button" key={m} className={mode === m ? 'on' : ''} aria-pressed={mode === m} onClick={() => void saveSettings({ mode: m })}
-                title={m === 'graph' ? 'Retrieve, then answer (LangGraph StateGraph)' : 'The model decides when to search (create_agent)'}>
-                {m === 'graph' ? 'Graph' : 'Agent'}
-              </button>
-            ))}
+          <div className="segmented mini" role="group" aria-label="Work on">
+            <button type="button" className={mode === 'folder' ? 'on' : ''} aria-pressed={mode === 'folder'}
+              onClick={() => void saveSettings({ mode: 'folder' })} title="Read, edit and run things in a folder on your computer">
+              Folder
+            </button>
+            <button type="button" className={mode !== 'folder' ? 'on' : ''} aria-pressed={mode !== 'folder'}
+              onClick={() => { if (mode === 'folder') void saveSettings({ mode: 'graph' }) }} title="Answer from the documents you added, with page citations">
+              Docs
+            </button>
           </div>
         )}
       </div>
