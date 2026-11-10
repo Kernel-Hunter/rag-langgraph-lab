@@ -1,7 +1,5 @@
 /*
- * Design tokens. Structure (layers, label levels, border levels, radii, motion)
- * follows the token layout of deepseek-ai/deepseek-harness (MIT); values and
- * colors are Vesper's own.
+ * Design tokens: surface layers, text levels, borders, radii and motion.
  */
 :root {
   --font: -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI", Inter, Roboto, "Helvetica Neue", Arial, sans-serif;

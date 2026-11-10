@@ -1,9 +1,9 @@
 {
   "name": "vesper-desktop",
   "productName": "Vesper",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "private": true,
-  "description": "Vesper desktop app: chat with your documents.",
+  "description": "Vesper desktop app: an AI agent for your folders and documents.",
   "author": "Karim Masmoudi",
   "homepage": "https://github.com/Kernel-Hunter/vesper",
   "main": "dist/main.js",

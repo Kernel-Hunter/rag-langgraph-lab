@@ -191,9 +191,6 @@ Found a security problem? Please report it privately, see [SECURITY.md](SECURITY
 | `apps/web/` | React interface (Vite + TypeScript) |
 | `apps/desktop/` | Electron shell and packaging |
 
-The desktop layout follows [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)
-(MIT). Code adapted from it is credited in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
-
 ## Develop
 
 ```bash

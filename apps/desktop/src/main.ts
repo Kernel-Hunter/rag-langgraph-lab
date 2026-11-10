@@ -1,9 +1,5 @@
 // Vesper desktop shell: Electron main process + the Python engine as a
 // separate child process + the engine's web UI as the renderer.
-//
-// createWindow() and the edit context menu are adapted from the desktop app in
-// deepseek-ai/deepseek-harness (MIT, Copyright (c) 2026 DeepSeek); see
-// THIRD_PARTY_NOTICES.md.
 
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -65,6 +61,64 @@ function openExternally(url: string): void {
   }
 }
 
+/** Title bar and background per platform: the page draws its own header on macOS and Windows. */
+function platformFrame(): Electron.BrowserWindowConstructorOptions {
+  switch (process.platform) {
+    case 'darwin':
+      // Traffic lights sit inside the page's sidebar, which shows the native
+      // translucent sidebar material through a transparent window.
+      return {
+        titleBarStyle: 'hiddenInset',
+        trafficLightPosition: { x: 16, y: 18 },
+        backgroundColor: '#00000000',
+        vibrancy: 'sidebar',
+        visualEffectState: 'active',
+      }
+    case 'win32':
+      return {
+        titleBarStyle: 'hidden',
+        titleBarOverlay: { color: '#00000000', symbolColor: titleBarSymbolColor(), height: WINDOWS_TITLEBAR_HEIGHT },
+      }
+    default:
+      return {}
+  }
+}
+
+/** Keeps the window on the engine's page: other links open in the browser, nothing else loads. */
+function guardNavigation(contents: Electron.WebContents): void {
+  contents.setWindowOpenHandler(({ url }) => {
+    openExternally(url)
+    return { action: 'deny' }
+  })
+  contents.on('will-navigate', (event, url) => {
+    if (!sameOrigin(url)) {
+      event.preventDefault()
+      openExternally(url)
+    }
+  })
+  contents.on('will-attach-webview', event => event.preventDefault())
+}
+
+/** Right-click menu: editing commands in text fields, Copy on selected text, nothing elsewhere. */
+function attachContextMenu(window: BrowserWindow): void {
+  window.webContents.on('context-menu', (_event, params) => {
+    const flags = params.editFlags
+    const template: MenuItemConstructorOptions[] = params.isEditable
+      ? [
+          { role: 'undo', enabled: flags.canUndo },
+          { role: 'redo', enabled: flags.canRedo },
+          { type: 'separator' },
+          { role: 'cut', enabled: flags.canCut },
+          { role: 'copy', enabled: flags.canCopy },
+          { role: 'paste', enabled: flags.canPaste },
+          { type: 'separator' },
+          { role: 'selectAll', enabled: flags.canSelectAll },
+        ]
+      : params.selectionText ? [{ role: 'copy', enabled: flags.canCopy }] : []
+    if (template.length) Menu.buildFromTemplate(template).popup({ window })
+  })
+}
+
 function createWindow(info: EngineInfo, show = true): BrowserWindow {
   const window = new BrowserWindow({
     title: 'Vesper',
@@ -73,64 +127,24 @@ function createWindow(info: EngineInfo, show = true): BrowserWindow {
     minWidth: 860,
     minHeight: 560,
     show: false,
-    ...(process.platform === 'win32' ? {
-      titleBarStyle: 'hidden' as const,
-      titleBarOverlay: { height: WINDOWS_TITLEBAR_HEIGHT, color: '#00000000', symbolColor: titleBarSymbolColor() },
-    } : {}),
-    // hiddenInset places the traffic lights inside the sidebar; sidebar
-    // vibrancy needs a transparent window background to show through the page.
-    ...(process.platform === 'darwin' ? {
-      titleBarStyle: 'hiddenInset' as const,
-      trafficLightPosition: { x: 16, y: 18 },
-      vibrancy: 'sidebar' as const,
-      visualEffectState: 'active' as const,
-      backgroundColor: '#00000000',
-    } : {}),
+    ...platformFrame(),
     webPreferences: {
-      nodeIntegration: false,
-      contextIsolation: true,
+      preload: join(__dirname, 'preload.js'),
       sandbox: true,
+      contextIsolation: true,
+      nodeIntegration: false,
       webSecurity: true,
       webviewTag: false,
-      devTools: !app.isPackaged,
       spellcheck: false,
-      preload: join(__dirname, 'preload.js'),
+      devTools: !app.isPackaged,
     },
   })
+  guardNavigation(window.webContents)
+  attachContextMenu(window)
   if (show) window.once('ready-to-show', () => window.show())
-
-  window.webContents.setWindowOpenHandler(({ url }) => {
-    openExternally(url)
-    return { action: 'deny' }
-  })
-  window.webContents.on('will-navigate', (event, url) => {
-    if (sameOrigin(url)) return
-    event.preventDefault()
-    openExternally(url)
-  })
-  window.webContents.on('will-attach-webview', event => event.preventDefault())
-  window.webContents.on('context-menu', (_event, { isEditable, selectionText, editFlags }) => {
-    const items: MenuItemConstructorOptions[] = []
-    if (isEditable) {
-      items.push(
-        { role: 'undo', enabled: editFlags.canUndo },
-        { role: 'redo', enabled: editFlags.canRedo },
-        { type: 'separator' },
-        { role: 'cut', enabled: editFlags.canCut },
-        { role: 'copy', enabled: editFlags.canCopy },
-        { role: 'paste', enabled: editFlags.canPaste },
-        { type: 'separator' },
-        { role: 'selectAll', enabled: editFlags.canSelectAll },
-      )
-    } else if (selectionText.length > 0) {
-      items.push({ role: 'copy', enabled: editFlags.canCopy })
-    }
-    if (items.length > 0) Menu.buildFromTemplate(items).popup({ window })
-  })
   window.on('closed', () => {
     if (mainWindow === window) mainWindow = undefined
   })
-
   void window.loadURL(info.url)
   return window
 }

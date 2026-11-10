@@ -1,7 +1,7 @@
 # Instructions for coding agents
 
-This file is for whatever coding agent a teammate uses (DeepSeek Harness, Claude Code,
-Codex, Cursor, ...). Point your harness at this file if it does not pick it up on its own.
+This file is for whatever coding agent a teammate uses (Codex, Cursor, Claude Code,
+Aider, ...). Point your harness at this file if it does not pick it up on its own.
 
 ## What this project is
 

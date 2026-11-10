@@ -1,7 +1,5 @@
-// electron-builder configuration for Vesper.
-// Adapted from apps/desktop/scripts/electron-builder-config.mjs in
-// deepseek-ai/deepseek-harness (MIT, Copyright (c) 2026 DeepSeek), reduced to
-// the unsigned build path; see THIRD_PARTY_NOTICES.md.
+// electron-builder settings for the Vesper desktop app (unsigned builds for
+// macOS arm64, Windows x64 and Linux x64).
 //
 // The engine folder is the PyInstaller onedir build of src/vesper, made by
 // `python packaging/build_engine.py` before this runs.
@@ -9,67 +7,71 @@
 import { existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
-const icon = fileURLToPath(new URL('../../../packaging/icon.png', import.meta.url))
-const engine = fileURLToPath(new URL('../engine', import.meta.url))
+const here = (relative) => fileURLToPath(new URL(relative, import.meta.url))
+const icon = here('../../../packaging/icon.png')
+const engineDir = here('../engine')
 
-if (!existsSync(engine)) {
-  throw new Error(`Vesper engine not found at ${engine}. Run: python packaging/build_engine.py`)
+if (!existsSync(engineDir)) {
+  throw new Error(`Vesper engine not found at ${engineDir}. Run: python packaging/build_engine.py`)
 }
+
+const only = (arch, ...targets) => targets.map((target) => ({ target, arch: [arch] }))
 
 export default {
   appId: 'io.github.kernel-hunter.vesper',
   productName: 'Vesper',
   copyright: `Copyright © ${new Date().getFullYear()} Karim Masmoudi`,
   artifactName: 'Vesper-${version}-${os}-${arch}.${ext}',
+  publish: null,
   directories: { output: 'release' },
+
+  // The app code lives in an asar archive; the Python engine ships next to it.
   asar: true,
   files: ['dist/**/*', 'package.json'],
-  extraResources: [{ from: engine, to: 'engine', filter: ['**/*'] }],
-  // Lock down the Electron binary: it cannot be run as plain Node, does not take
-  // inspector flags or NODE_OPTIONS, and only loads the app from its checked asar.
+  extraResources: [{ from: engineDir, to: 'engine', filter: ['**/*'] }],
+
+  // Lock down the Electron binary: it cannot run as plain Node, ignores inspector
+  // flags and NODE_OPTIONS, and only loads the app from its checked asar.
   electronFuses: {
     runAsNode: false,
-    enableCookieEncryption: true,
     enableNodeOptionsEnvironmentVariable: false,
     enableNodeCliInspectArguments: false,
-    enableEmbeddedAsarIntegrityValidation: true,
     onlyLoadAppFromAsar: true,
+    enableEmbeddedAsarIntegrityValidation: true,
+    enableCookieEncryption: true,
     grantFileProtocolExtraPrivileges: false,
   },
+
   mac: {
     icon,
     category: 'public.app-category.productivity',
-    target: [{ target: 'dmg', arch: ['arm64'] }, { target: 'zip', arch: ['arm64'] }],
-    // Ad-hoc signing keeps the app runnable on Apple Silicon without a Developer ID.
+    target: only('arm64', 'dmg', 'zip'),
+    // No Developer ID: an ad-hoc signature is enough for Apple Silicon to run it.
     identity: '-',
     hardenedRuntime: false,
     notarize: false,
   },
-  dmg: {
-    sign: false,
-    writeUpdateInfo: false,
-  },
-  win: {
-    icon,
-    target: [{ target: 'nsis', arch: ['x64'] }],
-  },
+  dmg: { sign: false, writeUpdateInfo: false },
+
+  win: { icon, target: only('x64', 'nsis') },
+  // Per-user install with no admin prompt; the user may pick the folder.
   nsis: {
     oneClick: false,
     perMachine: false,
     allowElevation: false,
     allowToChangeInstallationDirectory: true,
-    createDesktopShortcut: true,
     createStartMenuShortcut: true,
+    createDesktopShortcut: true,
     shortcutName: 'Vesper',
     uninstallDisplayName: 'Vesper',
     differentialPackage: false,
   },
+
   linux: {
     icon,
     category: 'Office',
     executableName: 'vesper',
-    synopsis: 'Chat with your documents',
-    target: [{ target: 'AppImage', arch: ['x64'] }, { target: 'tar.gz', arch: ['x64'] }],
+    synopsis: 'AI agent for your folders and documents',
+    target: only('x64', 'AppImage', 'tar.gz'),
   },
-  publish: null,
 }
