@@ -5,6 +5,7 @@ instead of impressions. Questions live in eval/questions.yaml.
 """
 
 import json
+import re
 import time
 from pathlib import Path
 
@@ -53,7 +54,8 @@ def run_eval(ask, questions: list[dict], out_dir: str | Path | None = None, labe
     if out_dir:
         out = Path(out_dir)
         out.mkdir(parents=True, exist_ok=True)
-        path = out / f"{time.strftime('%Y%m%d-%H%M%S')}-{label}.json"
+        safe_label = re.sub(r"[^A-Za-z0-9._-]+", "_", label)  # valid file name on Windows too
+        path = out / f"{time.strftime('%Y%m%d-%H%M%S')}-{safe_label}.json"
         path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
         print(f"Saved {path}")
     return report

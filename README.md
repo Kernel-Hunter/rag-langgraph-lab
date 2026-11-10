@@ -9,17 +9,37 @@ project you can run, test and measure:
 - the agentic version from slide 9 (`create_agent` with a `search_handbook` tool)
 - swappable providers: OpenAI, DeepSeek, Ollama, local HuggingFace embeddings
 - an eval harness that scores a fixed question set, so you compare settings with numbers
-- offline tests and CI, so nobody breaks the pipeline without noticing
+- offline tests that run on every push and pull request
 
 ## Setup
+
+Works on Windows, Linux and macOS with Python 3.11 or newer. CI tests all three.
+
+Linux / macOS:
 
 ```bash
 git clone https://github.com/Kernel-Hunter/rag-langgraph-lab.git
 cd rag-langgraph-lab
-python -m venv .venv && source .venv/bin/activate      # Windows: .venv\Scripts\activate
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -e ".[dev,local]"
-cp .env.example .env                                   # then put your keys in .env
+cp .env.example .env
 ```
+
+Windows (PowerShell):
+
+```powershell
+git clone https://github.com/Kernel-Hunter/rag-langgraph-lab.git
+cd rag-langgraph-lab
+py -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -e ".[dev,local]"
+copy .env.example .env
+```
+
+If PowerShell refuses to run `Activate.ps1`, run
+`Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once, or use `cmd` and
+`.venv\Scripts\activate.bat`. Then open `.env` and put in your keys.
 
 Pick a provider pair in `.env`:
 
@@ -54,7 +74,7 @@ Delete that folder after you change documents, chunk size or embedding model.
 
 ## The documents
 
-`data/handbook.md` is a **sample** written so the code runs today. Put the real
+`data/handbook.md` is a made-up sample so the code runs before you have the real file. Put the real
 `handbook.pdf` from the chapter's `rag_demo` folder in `data/`, delete the sample, and
 update `eval/questions.yaml` to match. Any `.pdf`, `.md` or `.txt` in `data/` is indexed.
 

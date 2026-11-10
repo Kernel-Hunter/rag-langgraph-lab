@@ -1,6 +1,7 @@
 """Command line entry point: `rag-lab --help`."""
 
 import argparse
+import sys
 
 from rag_lab.indexing import index
 from rag_lab.providers import get_embeddings, get_llm
@@ -58,6 +59,11 @@ def _print_result(result: dict) -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
+    # Windows consoles and redirected output may default to cp1252; answers can hold any Unicode.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
     parser = argparse.ArgumentParser(prog="rag-lab", description="Chapter 5B RAG lab")
     sub = parser.add_subparsers(dest="command", required=True)
 
