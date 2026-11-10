@@ -37,6 +37,11 @@ if (SMOKE) {
   engineEnv = { ...process.env, VESPER_FAKE_LLM: '1', VESPER_HOME: smokeHome }
 }
 
+// Vesper keeps no secrets in Electron (API keys live in the engine's ~/.vesper/.env).
+// Without this, Chromium creates a "Vesper Safe Storage" Keychain item, and since each
+// unsigned build has a new signature, macOS asks for Keychain access after every update.
+if (process.platform === 'darwin') app.commandLine.appendSwitch('use-mock-keychain')
+
 const engine = new Engine(engineEnv)
 let mainWindow: BrowserWindow | undefined
 let quitting = false

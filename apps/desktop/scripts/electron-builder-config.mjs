@@ -38,7 +38,8 @@ export default {
     enableNodeCliInspectArguments: false,
     onlyLoadAppFromAsar: true,
     enableEmbeddedAsarIntegrityValidation: true,
-    enableCookieEncryption: true,
+    // The app stores nothing in cookies, so there is nothing to encrypt with the OS keychain.
+    enableCookieEncryption: false,
     grantFileProtocolExtraPrivileges: false,
   },
 
