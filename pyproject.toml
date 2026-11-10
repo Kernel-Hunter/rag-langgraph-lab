@@ -1,6 +1,6 @@
 [project]
 name = "rag-langgraph-lab"
-version = "0.3.0"
+version = "0.3.1"
 description = "Pagewise: chat with your documents (Chapter 5B RAG lab with LangChain and LangGraph), with many model providers and an eval harness."
 readme = "README.md"
 requires-python = ">=3.11"

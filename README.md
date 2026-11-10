@@ -127,5 +127,5 @@ npm --prefix apps/web test     # interface units
 Push a tag and GitHub builds, smoke-tests and publishes all three platforms:
 
 ```bash
-git tag v0.3.1 && git push origin v0.3.1
+git tag v0.3.2 && git push origin v0.3.2
 ```

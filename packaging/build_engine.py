@@ -32,7 +32,10 @@ sys.path.insert(0, str(ROOT / "src"))
 from rag_lab.providers import LocalEmbeddings  # noqa: E402
 
 LocalEmbeddings().embed_query("warm up")
-MODELS = Path(MODEL_HOME) / "models"
+# The Hugging Face cache links snapshot files to blobs with symlinks (also on the
+# Windows runners). Installers cannot pack those, so ship a copy with real files.
+MODELS = Path(MODEL_HOME) / "models-flat"
+shutil.copytree(Path(MODEL_HOME) / "models", MODELS, symlinks=False, ignore=shutil.ignore_patterns("blobs"))
 
 # Imported lazily or loaded by name, so PyInstaller cannot see them on its own.
 SUBMODULES = ["langchain_openai", "langchain_anthropic", "tiktoken_ext", "uvicorn"]
