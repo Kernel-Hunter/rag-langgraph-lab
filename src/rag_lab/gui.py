@@ -6,6 +6,7 @@ back to the Tk main thread through a queue.
 
 import os
 import queue
+import sys
 import threading
 import traceback
 from pathlib import Path
@@ -13,10 +14,13 @@ from tkinter import filedialog
 
 import customtkinter as ctk
 
-from rag_lab.providers import EMBEDDING_DEFAULTS, LLM_DEFAULTS
+from rag_lab.providers import EMBEDDING_DEFAULTS, LLM_DEFAULTS, save_user_settings
 from rag_lab.service import HelpDesk, Settings
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if getattr(sys, "frozen", False):  # installed app built with PyInstaller
+    PROJECT_ROOT = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
+else:
+    PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DOCS = PROJECT_ROOT / "data" if (PROJECT_ROOT / "data").is_dir() else Path.cwd() / "data"
 KEY_VARS = {"openai": "OPENAI_API_KEY", "deepseek": "DEEPSEEK_API_KEY"}
 
@@ -39,7 +43,7 @@ class App(ctk.CTk):
         self._build_sidebar()
         self._build_chat()
         self.after(100, self._poll)
-        self.after(200, self.rebuild)
+        self.after(200, lambda: self.rebuild(startup=True))
 
     # ---------- layout ----------
     def _build_sidebar(self):
@@ -75,6 +79,8 @@ class App(ctk.CTk):
 
         label("API key")
         self.key_entry = place(ctk.CTkEntry(side, show="•", placeholder_text="not needed for ollama"))
+        self.remember_var = ctk.BooleanVar(value=False)
+        place(ctk.CTkCheckBox(side, text="Remember settings and key", variable=self.remember_var), pady=(6, 2))
         self._on_llm_change(self.llm_var.get())
 
         label("Embeddings")
@@ -196,7 +202,7 @@ class App(ctk.CTk):
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def rebuild(self):
+    def rebuild(self, startup: bool = False):
         if self.busy:
             return
         try:
@@ -205,13 +211,31 @@ class App(ctk.CTk):
             self._bubble("Chunk size and k must be whole numbers.", "error")
             return
         var = KEY_VARS.get(settings.llm_provider)
-        if var and self.key_entry.get().strip():
-            os.environ[var] = self.key_entry.get().strip()  # this session only, never written to disk
-        if settings.embeddings_provider == "openai" and not os.getenv("OPENAI_API_KEY"):
-            self._bubble(
-                "OpenAI embeddings need OPENAI_API_KEY. Pick ollama or huggingface embeddings, or add the key to .env.",
-                "error",
+        key = self.key_entry.get().strip()
+        if var and key:
+            os.environ[var] = key
+        if self.remember_var.get():
+            path = save_user_settings(
+                {
+                    "LLM_PROVIDER": settings.llm_provider,
+                    "LLM_MODEL": settings.llm_model or "",
+                    "EMBEDDINGS_PROVIDER": settings.embeddings_provider,
+                    "EMBEDDINGS_MODEL": settings.embeddings_model or "",
+                    **({var: key} if var and key else {}),
+                }
             )
+            self._bubble(f"Saved to {path}", "info")
+        missing = [
+            v for v in (var, "OPENAI_API_KEY" if settings.embeddings_provider == "openai" else None)
+            if v and not os.getenv(v)
+        ]
+        if missing:
+            hint = (
+                "Welcome. Choose a chat model and embeddings on the left, paste your API key, "
+                "then press \"Apply and re-index\". DeepSeek has no embeddings, so pair it with "
+                "ollama or openai embeddings."
+            )
+            self._bubble(hint if startup else f"Missing {', '.join(missing)}. Paste the key on the left.", "info" if startup else "error")
             return
         self._set_busy(True, "Indexing documents…")
         self._run("ready", lambda: HelpDesk(settings))
@@ -256,7 +280,43 @@ class App(ctk.CTk):
         self.after(100, self._poll)
 
 
+def smoke_test() -> int:
+    """`--smoke`: used by the release build to prove the packaged app starts.
+
+    Builds every provider client (no network call), then opens the window,
+    indexes the bundled sample with fake embeddings and exits 0 when ready.
+    """
+    from rag_lab.providers import get_embeddings, get_llm
+
+    for name in ("OPENAI_API_KEY", "DEEPSEEK_API_KEY"):
+        os.environ.setdefault(name, "smoke-test")
+    for provider in LLM_DEFAULTS:
+        get_llm(provider)
+    for provider in ("openai", "ollama", "fake"):
+        get_embeddings(provider)
+    import tiktoken_ext.openai_public  # noqa: F401  needed by OpenAI embeddings at runtime
+
+    app = App()
+    app.emb_var.set("fake")
+    app.llm_var.set("ollama")
+    outcome = {"code": 1}
+
+    def check():
+        if app.desk is not None:
+            outcome["code"] = 0
+            app.destroy()
+        else:
+            app.after(200, check)
+
+    app.after(15000, app.destroy)  # give up after 15 s
+    app.after(200, check)
+    app.mainloop()
+    return outcome["code"]
+
+
 def main():
+    if "--smoke" in sys.argv:
+        sys.exit(smoke_test())
     App().mainloop()
 
 

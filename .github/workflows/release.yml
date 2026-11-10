@@ -1,0 +1,92 @@
+name: release
+
+# Push a tag like v0.1.0 to build installers for Windows, macOS and Linux
+# and attach them to a GitHub release. "Run workflow" builds without releasing.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            asset: RAG-Help-Desk-Setup.exe
+          - os: macos-latest
+            asset: RAG-Help-Desk-macOS.dmg
+          - os: ubuntu-22.04
+            asset: RAG-Help-Desk-Linux-x86_64.tar.gz
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[ollama]" pyinstaller
+      - run: python packaging/build.py
+
+      - name: Smoke test the packaged app (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath "dist\RAG-Help-Desk\RAG-Help-Desk.exe" -ArgumentList "--smoke" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "smoke test failed: $($p.ExitCode)" }
+      - name: Smoke test the packaged app (macOS)
+        if: runner.os == 'macOS'
+        run: dist/RAG-Help-Desk.app/Contents/MacOS/RAG-Help-Desk --smoke
+      - name: Smoke test the packaged app (Linux)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a dist/RAG-Help-Desk/RAG-Help-Desk --smoke
+
+      - name: Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = if ("${{ github.ref_type }}" -eq "tag") { "${{ github.ref_name }}".TrimStart("v") } else { "0.0.0" }
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
+          & $iscc "/DAppVersion=$version" packaging\windows.iss
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed" }
+      - name: macOS disk image
+        if: runner.os == 'macOS'
+        run: hdiutil create -volname "RAG Help Desk" -srcfolder dist/RAG-Help-Desk.app -ov -format UDZO dist/${{ matrix.asset }}
+      - name: Linux archive
+        if: runner.os == 'Linux'
+        run: tar -czf dist/${{ matrix.asset }} -C dist RAG-Help-Desk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/${{ matrix.asset }}
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" assets/* \
+            --repo "${{ github.repository }}" \
+            --title "RAG Help Desk ${{ github.ref_name }}" \
+            --notes-file - <<'EOF'
+          Desktop app for the Chapter 5B RAG lab.
+
+          - Windows: download RAG-Help-Desk-Setup.exe and run it. If SmartScreen warns, click "More info", then "Run anyway" (the installer is not code-signed).
+          - macOS (Apple Silicon): open the .dmg and drag the app to Applications. The first time, right-click the app and choose Open (it is not notarized).
+          - Linux: extract the archive and run RAG-Help-Desk/RAG-Help-Desk.
+
+          Then pick a chat model and embeddings on the left, paste your API key, and press "Apply and re-index".
+          EOF

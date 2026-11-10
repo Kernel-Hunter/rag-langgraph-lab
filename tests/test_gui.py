@@ -26,6 +26,7 @@ def app(monkeypatch):
     except tkinter.TclError as exc:
         pytest.skip(f"no display: {exc}")
     window.emb_var.set("fake")
+    window.llm_var.set("ollama")  # no key needed; the fake model replaces it anyway
     yield window
     window.destroy()
 

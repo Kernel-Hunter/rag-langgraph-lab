@@ -5,10 +5,34 @@ Change LLM_PROVIDER / EMBEDDINGS_PROVIDER in .env and nothing else moves.
 """
 
 import os
+from pathlib import Path
 
 from dotenv import load_dotenv
 
+# Per-user settings file. The installed desktop app has no project folder, so it keeps
+# keys and choices here. Project .env (loaded first) wins over it.
+USER_ENV = Path.home() / ".rag-lab" / ".env"
+
 load_dotenv()
+load_dotenv(USER_ENV)
+
+
+def save_user_settings(values: dict[str, str]) -> Path:
+    """Merge values into ~/.rag-lab/.env (readable only by the current user)."""
+    USER_ENV.parent.mkdir(parents=True, exist_ok=True)
+    current: dict[str, str] = {}
+    if USER_ENV.exists():
+        for line in USER_ENV.read_text(encoding="utf-8").splitlines():
+            if "=" in line and not line.lstrip().startswith("#"):
+                key, _, value = line.partition("=")
+                current[key.strip()] = value.strip()
+    current.update({k: v for k, v in values.items() if v})
+    USER_ENV.write_text("".join(f"{k}={v}\n" for k, v in current.items()), encoding="utf-8")
+    try:
+        USER_ENV.chmod(0o600)
+    except OSError:  # Windows ignores POSIX modes
+        pass
+    return USER_ENV
 
 LLM_DEFAULTS = {
     "openai": "gpt-4.1-nano",

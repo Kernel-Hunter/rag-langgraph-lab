@@ -8,3 +8,5 @@ __pycache__/
 chroma_db/
 eval/results/
 .DS_Store
+build/
+dist/
