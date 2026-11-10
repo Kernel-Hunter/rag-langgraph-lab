@@ -34,16 +34,23 @@ function Install-Cli {
   }
   if (-not $uv) {
     Say 'Installing uv (Python package manager from Astral)...'
-    powershell -NoProfile -ExecutionPolicy Bypass -Command 'irm https://astral.sh/uv/install.ps1 | iex' | Out-Null
+    $ErrorActionPreference = 'Continue'
+    powershell -NoProfile -ExecutionPolicy Bypass -Command 'irm https://astral.sh/uv/install.ps1 | iex' 2>&1 | Out-Null
+    $ErrorActionPreference = 'Stop'
     $uv = Join-Path $env:USERPROFILE '.local\bin\uv.exe'
     if (-not (Test-Path $uv)) { throw 'uv did not install. See https://docs.astral.sh/uv/ and run this again.' }
   }
   $ref = 'main'
   try { $ref = (Get-Release).tag_name } catch { }
   Say "Installing the vesper command ($ref)..."
-  & $uv tool install --force --python 3.12 "vesper-agent @ https://github.com/$repo/archive/$ref.tar.gz" | Out-Null
-  if ($LASTEXITCODE -ne 0) { throw 'Installing vesper failed. Run the command again to see the error.' }
+  # uv reports progress on stderr; Windows PowerShell 5.1 turns that into errors under 'Stop'.
+  $ErrorActionPreference = 'Continue'
+  $log = & $uv tool install --force --python 3.12 "vesper-agent @ https://github.com/$repo/archive/$ref.tar.gz" 2>&1
+  $ErrorActionPreference = 'Stop'
+  if ($LASTEXITCODE -ne 0) { $log | Write-Host; throw 'Installing vesper failed (output above).' }
+  $ErrorActionPreference = 'Continue'
   & $uv tool update-shell 2>$null | Out-Null
+  $ErrorActionPreference = 'Stop'
   Say 'Installed the vesper command.'
 }
 
@@ -82,7 +89,7 @@ if ($wantApp) { Install-App }
 Write-Host ''
 if ($wantCli) {
   Say 'Done. Open a new terminal, go to any folder and run: vesper'
-  Say "Desktop app: set `$env:VESPER_APP = '1' and run this again, or type /app inside vesper."
+  if (-not $wantApp) { Say "Desktop app: set `$env:VESPER_APP = '1' and run this again, or type /app inside vesper." }
 } else {
   Say 'Done.'
 }

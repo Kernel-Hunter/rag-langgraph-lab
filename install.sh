@@ -153,7 +153,11 @@ install_cli() {
   ref="$(latest_tag)"
   ref="${ref:-main}"
   say "Installing the vesper command ($ref)…"
-  "$uv_bin" tool install --force --python 3.12 "vesper-agent @ https://github.com/$REPO/archive/$ref.tar.gz" >/dev/null
+  if ! "$uv_bin" tool install --force --python 3.12 "vesper-agent @ https://github.com/$REPO/archive/$ref.tar.gz" >"$tmp/uv.log" 2>&1; then
+    cat "$tmp/uv.log" >&2
+    echo "Installing vesper failed (output above)." >&2
+    exit 1
+  fi
   "$uv_bin" tool update-shell >/dev/null 2>&1 || true
   bin_dir="$("$uv_bin" tool dir --bin 2>/dev/null || echo "$HOME/.local/bin")"
   say "Installed $bin_dir/vesper"
@@ -169,7 +173,7 @@ if [ "$WANT_CLI" = 1 ]; then
   else
     say "Done. Open a new terminal, go to any folder and run: vesper"
   fi
-  say "Desktop app: run this again with --app, or type /app inside vesper."
+  [ "$WANT_APP" = 1 ] || say "Desktop app: run this again with --app, or type /app inside vesper."
 else
   say "Done."
 fi
