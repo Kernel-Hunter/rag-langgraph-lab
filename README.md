@@ -1,147 +1,105 @@
-# RAG help desk with LangChain and LangGraph
+# RAG Help Desk
 
-Team repo for the Chapter 5B lab (Prompt Engineering, MedTech). It takes the code from the
-slides (load, split, embed, store, retrieve, augment, generate) and wraps it in a small
-project you can run, test and measure:
+A desktop app that answers questions from your own documents, built on the LangChain and
+LangGraph code from the Chapter 5B lab (Prompt Engineering, MedTech). Every answer shows
+the pages it came from. It works with most AI model providers, or fully offline with Ollama.
 
-- the fixed 2-step graph (`retrieve` then `generate`) from slides 6-7
-- an optional third `check` node that flags answers not supported by the context
-- the agentic version from slide 9 (`create_agent` with a `search_handbook` tool)
-- swappable providers: OpenAI, DeepSeek, Ollama, local HuggingFace embeddings
-- an eval harness that scores a fixed question set, so you compare settings with numbers
-- offline tests that run on every push and pull request
+![RAG Help Desk](packaging/icon.png)
 
-## Setup
+## Install
 
-Works on Windows, Linux and macOS with Python 3.11 or newer. CI tests all three.
+One command, no "unidentified developer" or SmartScreen warning.
 
-Linux / macOS:
+macOS (Apple Silicon) and Linux (x86_64):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Kernel-Hunter/rag-langgraph-lab/main/install.sh | bash
+```
+
+Windows 10/11 (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/Kernel-Hunter/rag-langgraph-lab/main/install.ps1 | iex
+```
+
+The scripts download the app from the [latest release](https://github.com/Kernel-Hunter/rag-langgraph-lab/releases/latest)
+and install it for your user only. Browsers tag the files they download, and that tag is
+what triggers the macOS and Windows warnings; `curl` and PowerShell do not add it. If you
+download the `.dmg` or `Setup.exe` by hand instead, the first launch shows the warning
+(macOS: right-click the app and choose Open; Windows: More info, then Run anyway).
+
+## What it does
+
+- Chat window with streaming answers, citations as page chips, and source cards you can expand.
+- Model picker in the composer. It lists the models your provider actually serves, or you type any model id.
+- Providers: OpenAI, Anthropic Claude, Google Gemini, DeepSeek, Mistral, Groq, OpenRouter, xAI Grok,
+  Together, Fireworks, Cerebras, NVIDIA NIM, Hugging Face, Moonshot Kimi, Ollama, LM Studio, and any
+  OpenAI-compatible endpoint.
+- Built-in embeddings that run on your computer (no key, no cost). The installed app ships the model.
+- Graph mode (retrieve, then generate, from slides 6-7) and Agent mode (the model decides when to search, slide 9).
+- "Verify" adds the check node: the model says whether its answer is supported by the sources.
+- Drag PDF, Markdown or text files into Documents. Chunk size, k and embeddings live under Settings, Retrieval.
+- Chats are kept on your computer. Keys stay in `~/.rag-lab/.env` and are never sent back to the page.
+
+Start with Settings, Models: paste a key for the provider you use, then pick a model from
+the menu at the bottom left of the composer. With [Ollama](https://ollama.com) installed you
+need no key at all.
+
+## Run from source
+
+Python 3.11 or newer.
 
 ```bash
 git clone https://github.com/Kernel-Hunter/rag-langgraph-lab.git
 cd rag-langgraph-lab
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -e ".[dev,local]"
-cp .env.example .env
-```
-
-Windows (PowerShell):
-
-```powershell
-git clone https://github.com/Kernel-Hunter/rag-langgraph-lab.git
-cd rag-langgraph-lab
-py -m venv .venv
-.venv\Scripts\Activate.ps1
-pip install -e ".[dev,local]"
-copy .env.example .env
-```
-
-If PowerShell refuses to run `Activate.ps1`, run
-`Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once, or use `cmd` and
-`.venv\Scripts\activate.bat`. Then open `.env` and put in your keys.
-
-Pick a provider pair in `.env`:
-
-| You have | `LLM_PROVIDER` | `EMBEDDINGS_PROVIDER` | Extra to install |
-|---|---|---|---|
-| OpenAI key (as in the slides) | `openai` | `openai` | none |
-| DeepSeek key only | `deepseek` | `huggingface` | `local` |
-| No key, everything on your laptop | `ollama` | `ollama` | `ollama` |
-
-DeepSeek has no embeddings endpoint, so pair it with local HuggingFace embeddings
-(free, about 90 MB download the first time) or with OpenAI embeddings.
-
-For Ollama: `ollama pull gemma3` and `ollama pull nomic-embed-text` first.
-
-## Download the app
-
-No Python needed. Get the file for your system from the
-[latest release](https://github.com/Kernel-Hunter/rag-langgraph-lab/releases/latest):
-
-| System | File | First run |
-|---|---|---|
-| Windows 10/11 | `RAG-Help-Desk-Setup.exe` | SmartScreen may warn because the installer is not signed: "More info", then "Run anyway". |
-| macOS (Apple Silicon) | `RAG-Help-Desk-macOS.dmg` | Drag the app to Applications, then right-click it and choose Open once. |
-| Linux x86_64 | `RAG-Help-Desk-Linux-x86_64.tar.gz` | `tar -xzf` it and run `RAG-Help-Desk/RAG-Help-Desk`. |
-
-In the app, pick a chat model and embeddings on the left, paste your API key and press
-"Apply and re-index". Tick "Remember settings and key" to keep them in `~/.rag-lab/.env`.
-The app ships with the sample handbook; "Choose folder…" points it at your own documents.
-
-To make a new release, push a tag: `git tag v0.2.0 && git push origin v0.2.0`.
-The release workflow builds and tests all three installers and attaches them.
-
-## Desktop app from source
-
-```bash
+pip install -e ".[dev]"
 rag-lab-app
 ```
 
-This opens a window with the chat on the right and the settings on the left: documents
-folder, chat model, API key, embeddings, chunk size, k, Graph or Agent mode, and the check
-node switch. Change a setting and press "Apply and re-index". Each answer shows the pages
-it came from, or the searches the agent made.
+On Windows use `py -m venv .venv` and `.venv\Scripts\Activate.ps1`. `rag-lab-app --browser`
+opens the UI in your browser instead of a window.
 
-A key typed in the window stays in memory for that session only. To keep it, put it in `.env`.
+## Command line and eval harness
 
-On Linux with the system Python, install Tk first: `sudo apt install python3-tk` (Debian,
-Ubuntu) or `sudo dnf install python3-tkinter` (Fedora). Python from python.org on Windows
-and macOS already includes it.
-
-## Command line
+The lab code is also available without the window:
 
 ```bash
 rag-lab ask "How many absences are allowed before I fail?"
-rag-lab ask "Can I bring my dog?" --check          # adds the check node
-rag-lab ask "When is the final exam?" --chunk-size 150 -k 1
+rag-lab ask "Can I bring my dog?" --check
 rag-lab agent "I was 20 minutes late twice. Absences?"
-rag-lab chat --mode agent                          # interactive
-rag-lab eval                                       # score eval/questions.yaml
-rag-lab eval --chunk-size 3000 --label big-chunks  # compare a setting
+rag-lab eval --chunk-size 150 -k 1 --label small-chunks
 ```
 
-Every command prints the retrieved chunks or the agent's searches under the answer.
-When an answer is wrong, read those first.
+`--llm` and `--embeddings` pick providers (for example `--llm groq --embeddings local`).
+`rag-lab eval` scores `eval/questions.yaml` so you can compare settings with numbers.
 
-`--store chroma` (needs the `chroma` extra) keeps the index in `./chroma_db` between runs.
-Delete that folder after you change documents, chunk size or embedding model.
+## Project layout
 
-## The documents
-
-`data/handbook.md` is a made-up sample so the code runs before you have the real file. Put the real
-`handbook.pdf` from the chapter's `rag_demo` folder in `data/`, delete the sample, and
-update `eval/questions.yaml` to match. Any `.pdf`, `.md` or `.txt` in `data/` is indexed.
+| Path | What it is |
+|---|---|
+| `src/rag_lab/indexing.py` | Steps 1-4: load, split, embed, store |
+| `src/rag_lab/graph.py` | Steps 5-7 as a LangGraph graph, plus the `check` node |
+| `src/rag_lab/agent.py` | Agentic RAG with `create_agent` |
+| `src/rag_lab/providers.py` | Every model provider and the local embeddings |
+| `src/rag_lab/server.py` | Local API the window talks to (127.0.0.1 only, token-protected) |
+| `src/rag_lab/web/` | The interface: HTML, CSS, JavaScript |
+| `src/rag_lab/desktop.py` | Opens the native window |
+| `packaging/` | PyInstaller build, Windows installer script, icon |
 
 ## Lab tasks
 
-From slide 10. Each one is a GitHub issue; assign yourself before you start.
+Slide 10 tasks are GitHub issues. Assign yourself one, work on a branch, open a pull request.
+`data/handbook.md` is a sample; put the real `handbook.pdf` in the app's Documents.
 
-Lab:
-1. Run the pipeline and print the retrieved chunks for "When is the final exam?"
-2. Ask "Can I bring my dog?". Does the model say "I don't know"? Fix the prompt if not.
-3. Set `chunk_size` to 150, then 3000. Watch the chunks and the answer change.
-4. Set `k=1`. Find a question that needs two chunks and see it fail.
+## Releases
 
-Going further:
-1. Index a document of your choice.
-2. Add a `check` node (done in `graph.py`, `--check`). Measure it on the eval set.
-3. Use the agent version on a question that needs two searches.
-4. Run everything locally with Ollama and compare with the cloud model.
+Push a tag and GitHub builds, tests and publishes all three platforms:
 
-## Working together
-
-- Work on a branch: `git checkout -b task/chunk-size`.
-- Open a pull request, let the tests pass, ask one teammate to review, then merge.
-- If your change can move answer quality, paste the `rag-lab eval` score before and after.
-- Never commit `.env`. If a key leaks, revoke it the same day.
-
-## Using a coding agent
-
-Check the course rules on AI tools and say in your report which ones you used. `AGENTS.md`
-describes the project, commands and rules for any coding-agent harness, for example
-[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`npx @deepseek-ai/dsh web`),
-Claude Code or Codex. Start your agent in the repo root and tell it to read `AGENTS.md`.
+```bash
+git tag v0.3.0 && git push origin v0.3.0
+```
 
 ## Tests
 
@@ -149,4 +107,4 @@ Claude Code or Codex. Start your agent in the repo root and tell it to read `AGE
 pytest -q
 ```
 
-Tests use fake embeddings and a fake chat model. They need no key and no network.
+They use fake models and need no key or network.

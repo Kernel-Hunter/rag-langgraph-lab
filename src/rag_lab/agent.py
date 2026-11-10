@@ -15,11 +15,16 @@ SYSTEM_PROMPT = (
 )
 
 
-def build_agent(vector_store, llm, k: int = 3):
+def build_agent(vector_store, llm, k: int = 3, recorder: list | None = None):
+    """`recorder`, if given, receives (query, docs) for every search so a UI can show sources."""
+
     @tool
     def search_handbook(query: str) -> str:
         """Search the course handbook. Use it for any question about course rules, grading, attendance or deadlines."""
-        return format_context(vector_store.similarity_search(query, k=k))
+        found = vector_store.similarity_search(query, k=k)
+        if recorder is not None:
+            recorder.append((query, found))
+        return format_context(found)
 
     return create_agent(llm, tools=[search_handbook], system_prompt=SYSTEM_PROMPT)
 

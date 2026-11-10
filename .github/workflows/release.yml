@@ -1,7 +1,7 @@
 name: release
 
-# Push a tag like v0.1.0 to build installers for Windows, macOS and Linux
-# and attach them to a GitHub release. "Run workflow" builds without releasing.
+# Push a tag like v0.2.0 to build the desktop app for Windows, macOS and Linux
+# and attach it to a GitHub release. "Run workflow" builds without releasing.
 on:
   push:
     tags: ["v*"]
@@ -15,31 +15,25 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: windows-latest
-            asset: RAG-Help-Desk-Setup.exe
-          - os: macos-latest
-            asset: RAG-Help-Desk-macOS.dmg
-          - os: ubuntu-22.04
-            asset: RAG-Help-Desk-Linux-x86_64.tar.gz
+        os: [windows-latest, macos-latest, ubuntu-22.04]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install -e ".[ollama]" pyinstaller
+      - run: pip install -e . pyinstaller pillow
       - run: python packaging/build.py
 
-      - name: Smoke test the packaged app (Windows)
+      - name: Smoke test the packaged app with its window (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $p = Start-Process -FilePath "dist\RAG-Help-Desk\RAG-Help-Desk.exe" -ArgumentList "--smoke" -Wait -PassThru
+          $p = Start-Process -FilePath "dist\RAG-Help-Desk\RAG-Help-Desk.exe" -ArgumentList "--smoke","--window" -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw "smoke test failed: $($p.ExitCode)" }
-      - name: Smoke test the packaged app (macOS)
+      - name: Smoke test the packaged app with its window (macOS)
         if: runner.os == 'macOS'
-        run: dist/RAG-Help-Desk.app/Contents/MacOS/RAG-Help-Desk --smoke
+        run: dist/RAG-Help-Desk.app/Contents/MacOS/RAG-Help-Desk --smoke --window
       - name: Smoke test the packaged app (Linux)
         if: runner.os == 'Linux'
         run: xvfb-run -a dist/RAG-Help-Desk/RAG-Help-Desk --smoke
@@ -53,17 +47,26 @@ jobs:
           if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
           & $iscc "/DAppVersion=$version" packaging\windows.iss
           if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed" }
-      - name: macOS disk image
+      - name: macOS zip and disk image
         if: runner.os == 'macOS'
-        run: hdiutil create -volname "RAG Help Desk" -srcfolder dist/RAG-Help-Desk.app -ov -format UDZO dist/${{ matrix.asset }}
+        run: |
+          ditto -c -k --keepParent dist/RAG-Help-Desk.app dist/RAG-Help-Desk-macOS-arm64.zip
+          hdiutil create -volname "RAG Help Desk" -srcfolder dist/RAG-Help-Desk.app -ov -format UDZO dist/RAG-Help-Desk-macOS-arm64.dmg
       - name: Linux archive
         if: runner.os == 'Linux'
-        run: tar -czf dist/${{ matrix.asset }} -C dist RAG-Help-Desk
+        run: |
+          cp packaging/icon.png dist/RAG-Help-Desk/icon.png
+          tar -czf dist/RAG-Help-Desk-Linux-x86_64.tar.gz -C dist RAG-Help-Desk
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.asset }}
-          path: dist/${{ matrix.asset }}
+          name: app-${{ runner.os }}
+          path: |
+            dist/RAG-Help-Desk-Setup.exe
+            dist/RAG-Help-Desk-macOS-arm64.zip
+            dist/RAG-Help-Desk-macOS-arm64.dmg
+            dist/RAG-Help-Desk-Linux-x86_64.tar.gz
+          if-no-files-found: ignore
 
   release:
     if: github.ref_type == 'tag'
@@ -82,11 +85,19 @@ jobs:
             --repo "${{ github.repository }}" \
             --title "RAG Help Desk ${{ github.ref_name }}" \
             --notes-file - <<'EOF'
-          Desktop app for the Chapter 5B RAG lab.
+          Desktop app for the Chapter 5B RAG lab: chat with your documents using OpenAI, Claude, Gemini, DeepSeek, Mistral, Groq, OpenRouter, Ollama and other models.
 
-          - Windows: download RAG-Help-Desk-Setup.exe and run it. If SmartScreen warns, click "More info", then "Run anyway" (the installer is not code-signed).
-          - macOS (Apple Silicon): open the .dmg and drag the app to Applications. The first time, right-click the app and choose Open (it is not notarized).
-          - Linux: extract the archive and run RAG-Help-Desk/RAG-Help-Desk.
+          **Install with one command (no security warning):**
 
-          Then pick a chat model and embeddings on the left, paste your API key, and press "Apply and re-index".
+          macOS (Apple Silicon) and Linux:
+          ```
+          curl -fsSL https://raw.githubusercontent.com/Kernel-Hunter/rag-langgraph-lab/main/install.sh | bash
+          ```
+
+          Windows (PowerShell):
+          ```
+          irm https://raw.githubusercontent.com/Kernel-Hunter/rag-langgraph-lab/main/install.ps1 | iex
+          ```
+
+          The files below are the same app for manual download. Browsers mark them as downloaded, so the first launch shows a warning (macOS: right-click the app, Open; Windows: More info, Run anyway).
           EOF

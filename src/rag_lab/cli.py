@@ -13,8 +13,8 @@ def _common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--chunk-overlap", type=int, default=100)
     p.add_argument("-k", type=int, default=3, help="chunks to retrieve")
     p.add_argument("--store", choices=["memory", "chroma"], default="memory")
-    p.add_argument("--llm", help="override LLM_PROVIDER (openai|deepseek|ollama)")
-    p.add_argument("--embeddings", help="override EMBEDDINGS_PROVIDER (openai|ollama|huggingface|fake)")
+    p.add_argument("--llm", help="override LLM_PROVIDER, e.g. openai, anthropic, google, deepseek, groq, openrouter, ollama")
+    p.add_argument("--embeddings", help="override EMBEDDINGS_PROVIDER: local (free, default), openai, google, mistral, ollama, fake")
 
 
 def _setup(args):

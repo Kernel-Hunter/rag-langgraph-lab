@@ -19,15 +19,17 @@ like the course material.
 - `src/rag_lab/agent.py`: agentic RAG with `create_agent` and a `search_handbook` tool.
 - `src/rag_lab/evaluate.py`: eval harness that scores answers against `eval/questions.yaml`.
 - `src/rag_lab/cli.py`: `rag-lab ask | agent | chat | eval`.
-- `src/rag_lab/service.py`: `HelpDesk`, which builds the index once and answers questions. Used by the desktop app.
-- `src/rag_lab/gui.py`: desktop app (`rag-lab-app`, CustomTkinter). Model calls run in a worker thread; never touch widgets from that thread.
+- `src/rag_lab/server.py`: FastAPI app on 127.0.0.1 with a per-launch token; streams answers as server-sent events.
+- `src/rag_lab/web/`: the UI (plain HTML/CSS/JS, vendored marked + DOMPurify). Sanitize any model output before inserting it.
+- `src/rag_lab/desktop.py`: `rag-lab-app`; opens the UI in a pywebview window. `--serve` runs only the server, `--smoke` tests a build.
+- `src/rag_lab/service.py`: `HelpDesk`, a small wrapper used by older code and tests.
 - `data/`: documents to index (`.pdf`, `.md`, `.txt`).
 - `tests/`: offline tests with fake embeddings and a fake chat model.
 
 ## Commands
 
 ```bash
-pip install -e ".[dev]"   # add ,local / ,ollama / ,chroma as needed
+pip install -e ".[dev]"   # add ,chroma or ,local as needed
 pytest -q                 # must pass before every PR, needs no API key
 rag-lab ask "How many absences are allowed?"
 rag-lab eval --label my-change
