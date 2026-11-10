@@ -741,7 +741,7 @@ def print_mode(root: Path, question: str, cfg: dict, mode: str) -> int:
     from vesper.coder import Session
     from vesper.workspace import Workspace
 
-    if not cfg.get("provider") or not provider_ready(cfg["provider"]):
+    if not prov.fake_llm_enabled() and (not cfg.get("provider") or not provider_ready(cfg["provider"])):
         err_console.print("No model is set up yet. Run `vesper` once to choose one.", style=ERR)
         return 2
     ws = Workspace(root, mode=mode,

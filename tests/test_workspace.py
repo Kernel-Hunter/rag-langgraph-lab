@@ -229,3 +229,19 @@ def test_approve_endpoint_validates(client):
     assert client.post("/api/approve", json={"id": "x", "answer": "maybe"}).status_code == 400
     assert client.post("/api/approve", json={"id": "x", "answer": "yes"}).status_code == 404
     assert client.post("/api/chat", json={"question": "hi", "chat_id": "../../x"}).status_code == 400
+
+
+def test_print_mode_with_fresh_home_and_piped_input(tmp_path, monkeypatch, capsys):
+    """`git diff | vesper "..."` on a machine where vesper has never run (fake model)."""
+    import io
+
+    from vesper import tui
+
+    monkeypatch.setenv("VESPER_FAKE_LLM", "1")
+    monkeypatch.setattr(tui, "load_config", lambda: {})
+    monkeypatch.setattr("sys.stdin", io.StringIO("diff --git a/x b/x\n"))
+    (tmp_path / "x").write_text("x\n")
+    assert tui.main(["-C", str(tmp_path), "--mode", "ask", "describe this"]) == 0
+    out = capsys.readouterr()
+    assert "Let me look at the folder first." in out.out and "List" in out.err
+    assert not (tmp_path / "vesper-notes.md").exists()  # ask mode with nobody to answer: refused
