@@ -15,6 +15,7 @@ dependencies = [
     "pypdf>=5.0",
     "python-dotenv>=1.0",
     "pyyaml>=6.0",
+    "customtkinter>=5.2",
 ]
 
 [project.optional-dependencies]
@@ -25,6 +26,9 @@ dev = ["pytest>=8.0"]
 
 [project.scripts]
 rag-lab = "rag_lab.cli:main"
+
+[project.gui-scripts]
+rag-lab-app = "rag_lab.gui:main"
 
 [build-system]
 requires = ["hatchling"]

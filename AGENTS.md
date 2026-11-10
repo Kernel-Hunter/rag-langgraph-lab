@@ -19,6 +19,8 @@ like the course material.
 - `src/rag_lab/agent.py`: agentic RAG with `create_agent` and a `search_handbook` tool.
 - `src/rag_lab/evaluate.py`: eval harness that scores answers against `eval/questions.yaml`.
 - `src/rag_lab/cli.py`: `rag-lab ask | agent | chat | eval`.
+- `src/rag_lab/service.py`: `HelpDesk`, which builds the index once and answers questions. Used by the desktop app.
+- `src/rag_lab/gui.py`: desktop app (`rag-lab-app`, CustomTkinter). Model calls run in a worker thread; never touch widgets from that thread.
 - `data/`: documents to index (`.pdf`, `.md`, `.txt`).
 - `tests/`: offline tests with fake embeddings and a fake chat model.
 

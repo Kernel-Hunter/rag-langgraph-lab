@@ -54,7 +54,24 @@ DeepSeek has no embeddings endpoint, so pair it with local HuggingFace embedding
 
 For Ollama: `ollama pull gemma3` and `ollama pull nomic-embed-text` first.
 
-## Run
+## Desktop app
+
+```bash
+rag-lab-app
+```
+
+This opens a window with the chat on the right and the settings on the left: documents
+folder, chat model, API key, embeddings, chunk size, k, Graph or Agent mode, and the check
+node switch. Change a setting and press "Apply and re-index". Each answer shows the pages
+it came from, or the searches the agent made.
+
+A key typed in the window stays in memory for that session only. To keep it, put it in `.env`.
+
+On Linux with the system Python, install Tk first: `sudo apt install python3-tk` (Debian,
+Ubuntu) or `sudo dnf install python3-tkinter` (Fedora). Python from python.org on Windows
+and macOS already includes it.
+
+## Command line
 
 ```bash
 rag-lab ask "How many absences are allowed before I fail?"

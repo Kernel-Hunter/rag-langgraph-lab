@@ -19,6 +19,9 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: pip install -e ".[dev]"
-      - run: pytest -q
+      - name: Tests (Linux runs the window test on a virtual display)
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then xvfb-run -a pytest -q -rs; else pytest -q -rs; fi
       - name: CLI entry point works
         run: rag-lab --help
