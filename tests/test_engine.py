@@ -233,7 +233,6 @@ def test_fake_llm_off_by_default(server, monkeypatch):
 @pytest.fixture
 def no_home_env(monkeypatch):
     monkeypatch.delenv("VESPER_HOME", raising=False)
-    monkeypatch.delenv("VESPER_HOME", raising=False)
     from vesper import providers
 
     return providers
@@ -263,14 +262,11 @@ def test_home_migrates_old_folder_once(tmp_path, no_home_env):
 
 
 def test_home_env_overrides(tmp_path, monkeypatch, no_home_env):
-    monkeypatch.setenv("VESPER_HOME", str(tmp_path / "r"))
-    assert no_home_env.resolve_home(tmp_path) == tmp_path / "r"
     monkeypatch.setenv("VESPER_HOME", str(tmp_path / "p"))
     assert no_home_env.resolve_home(tmp_path) == tmp_path / "p"
 
 
 def test_module_home_follows_env(tmp_path, monkeypatch):
-    monkeypatch.delenv("VESPER_HOME", raising=False)
     monkeypatch.setenv("VESPER_HOME", str(tmp_path))
     from vesper import providers
 

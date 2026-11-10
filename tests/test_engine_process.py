@@ -14,7 +14,6 @@ READY = re.compile(r'^VESPER_READY \{"port": (\d+), "token": "([^"]+)"\}$')
 
 def _launch(tmp_path, **env):
     full = {**os.environ, "VESPER_HOME": str(tmp_path), "VESPER_FAKE_LLM": "1", "PYTHONUNBUFFERED": "1", **env}
-    full.pop("VESPER_HOME", None)
     (tmp_path / "config.json").write_text(json.dumps({"embeddings": "fake"}))
     return subprocess.Popen([sys.executable, "-m", "vesper.desktop", "--engine"], env=full,
                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
