@@ -5,15 +5,15 @@ import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vitest/config'
 
 // The Python engine serves the built app: index at "/", assets under "/static/".
-// Dev: run the engine with `rag-lab-app --serve` (RAG_LAB_PORT=8765 RAG_LAB_TOKEN=devtoken)
+// Dev: run the engine with `rag-lab-app --serve` (VESPER_PORT=8765 VESPER_TOKEN=devtoken)
 // and `npm run dev`, then open http://localhost:5173/#token=devtoken
-const engine = process.env.PAGEWISE_ENGINE ?? 'http://127.0.0.1:8765'
+const engine = process.env.VESPER_ENGINE ?? 'http://127.0.0.1:8765'
 
 export default defineConfig(({ command }) => ({
   base: command === 'build' ? '/static/' : '/',
   plugins: [react()],
   build: {
-    outDir: fileURLToPath(new URL('../../src/rag_lab/web', import.meta.url)),
+    outDir: fileURLToPath(new URL('../../src/vesper/web', import.meta.url)),
     emptyOutDir: true,
     target: 'es2022',
     sourcemap: false,

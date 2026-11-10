@@ -1,4 +1,4 @@
-// Pagewise desktop shell: Electron main process + the Python engine as a
+// Vesper desktop shell: Electron main process + the Python engine as a
 // separate child process + the engine's web UI as the renderer.
 //
 // createWindow() and the edit context menu are adapted from the desktop app in
@@ -30,14 +30,14 @@ let engineEnv: NodeJS.ProcessEnv = process.env
 if (SMOKE) {
   // Throwaway data folders and a fake chat model: the smoke test needs no
   // network, no API key, and leaves nothing behind.
-  smokeHome = mkdtempSync(join(tmpdir(), 'pagewise-smoke-'))
+  smokeHome = mkdtempSync(join(tmpdir(), 'vesper-smoke-'))
   // Chromium writes a few files into userData while it shuts down, after any
   // cleanup could run, so it gets one fixed folder that each smoke run resets.
-  const smokeUserData = join(tmpdir(), 'pagewise-smoke-electron')
+  const smokeUserData = join(tmpdir(), 'vesper-smoke-electron')
   rmSync(smokeUserData, { recursive: true, force: true })
   app.setPath('userData', smokeUserData)
   app.commandLine.appendSwitch('disable-http-cache')
-  engineEnv = { ...process.env, RAG_LAB_FAKE_LLM: '1', RAG_LAB_HOME: smokeHome, PAGEWISE_HOME: smokeHome }
+  engineEnv = { ...process.env, VESPER_FAKE_LLM: '1', VESPER_HOME: smokeHome, VESPER_HOME: smokeHome }
 }
 
 const engine = new Engine(engineEnv)
@@ -66,7 +66,7 @@ function openExternally(url: string): void {
 
 function createWindow(info: EngineInfo, show = true): BrowserWindow {
   const window = new BrowserWindow({
-    title: 'Pagewise',
+    title: 'Vesper',
     width: 1280,
     height: 820,
     minWidth: 860,
@@ -170,8 +170,8 @@ function installMenu(): void {
 function showStartupError(err: unknown): void {
   const message = err instanceof Error ? err.message : String(err)
   const log = err instanceof EngineError && err.log !== '' ? `\n\nLast engine output:\n${err.log.split('\n').slice(-12).join('\n')}` : ''
-  dialog.showErrorBox('Pagewise could not start',
-    `${message}\n\nTry opening Pagewise again. If this keeps happening, reinstall it or report the problem with the details below.${log}`)
+  dialog.showErrorBox('Vesper could not start',
+    `${message}\n\nTry opening Vesper again. If this keeps happening, reinstall it or report the problem with the details below.${log}`)
 }
 
 function cleanupSmoke(): void {
@@ -179,8 +179,8 @@ function cleanupSmoke(): void {
 }
 
 async function finishSmoke(code: number, detail: string): Promise<void> {
-  if (code === 0) console.log('PAGEWISE_SMOKE ok')
-  else console.error(`PAGEWISE_SMOKE failed: ${detail}`)
+  if (code === 0) console.log('VESPER_SMOKE ok')
+  else console.error(`VESPER_SMOKE failed: ${detail}`)
   quitting = true
   await engine.stop()
   mainWindow?.destroy()

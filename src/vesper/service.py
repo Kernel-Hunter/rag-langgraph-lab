@@ -2,8 +2,8 @@
 
 from dataclasses import dataclass
 
-from rag_lab.indexing import load_documents, split_documents, build_vector_store
-from rag_lab.providers import get_embeddings, get_llm
+from vesper.indexing import load_documents, split_documents, build_vector_store
+from vesper.providers import get_embeddings, get_llm
 
 
 @dataclass
@@ -36,13 +36,13 @@ class HelpDesk:
     def ask(self, question: str) -> dict:
         s = self.settings
         if s.mode == "agent":
-            from rag_lab.agent import ask_agent, build_agent
+            from vesper.agent import ask_agent, build_agent
 
             self._agent = self._agent or build_agent(self.vector_store, self.llm, k=s.k)
             result = ask_agent(self._agent, question)
             return {"answer": result["answer"], "sources": [], "searches": result["searches"], "supported": None}
 
-        from rag_lab.graph import build_graph
+        from vesper.graph import build_graph
 
         self._graph = self._graph or build_graph(self.vector_store, self.llm, k=s.k, check=s.check)
         state = self._graph.invoke({"question": question})

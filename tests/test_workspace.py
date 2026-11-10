@@ -1,0 +1,165 @@
+"""Workspace tools and the agent loop, offline (fake models)."""
+
+import os
+import sys
+
+import pytest
+from langchain_core.embeddings import DeterministicFakeEmbedding
+from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+from langchain_core.messages import AIMessage
+
+from vesper.coder import Session
+from vesper.workspace import Workspace
+
+
+@pytest.fixture
+def ws(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("def hello():\n    return 'hi'\n\nprint(hello())\n")
+    (tmp_path / "notes.md").write_text("# Notes\n\nTwo absences are allowed.\n")
+    (tmp_path / "node_modules").mkdir()
+    (tmp_path / "node_modules" / "junk.js").write_text("x")
+    (tmp_path / "blob.bin").write_bytes(b"\x00\x01\x02")
+    return Workspace(tmp_path, approve=lambda a: "yes",
+                     embeddings_factory=lambda: DeterministicFakeEmbedding(size=32))
+
+
+def tools(ws):
+    return {t.name: t for t in ws.tools()}
+
+
+# ---------------------------------------------------------------- paths
+@pytest.mark.parametrize("path", ["..", "../x", "/etc/passwd", "~/.ssh/id_rsa", "src/../../x"])
+def test_paths_outside_are_refused(ws, path):
+    out = tools(ws)["read_file"].invoke({"path": path})
+    assert out.startswith("Error:") and "outside the workspace" in out
+
+
+def test_symlink_escape_refused(ws, tmp_path_factory):
+    outside = tmp_path_factory.mktemp("outside")
+    (outside / "secret.txt").write_text("secret")
+    try:
+        os.symlink(outside / "secret.txt", ws.root / "link.txt")
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks not available")
+    out = tools(ws)["read_file"].invoke({"path": "link.txt"})
+    assert out.startswith("Error:") and "secret" not in out.split("outside")[0].replace("link.txt", "")
+
+
+# ---------------------------------------------------------------- read side
+def test_list_files_skips_ignored(ws):
+    out = ws.list_files(".")
+    assert "src/" in out and "app.py" in out and "notes.md" in out
+    assert "node_modules" not in out
+
+
+def test_read_file_numbers_lines(ws):
+    out = ws.read_file("src/app.py", offset=2, limit=1)
+    assert "     2\t    return 'hi'" in out and "offset=3" in out
+    assert "binary" in ws.read_file("blob.bin")
+    assert tools(ws)["read_file"].invoke({"path": "missing.txt"}).startswith("Error:")
+
+
+def test_read_pdf(ws):
+    pypdf = pytest.importorskip("pypdf")
+    w = pypdf.PdfWriter()
+    w.add_blank_page(width=100, height=100)
+    with open(ws.root / "doc.pdf", "wb") as f:
+        w.write(f)
+    assert ws.read_file("doc.pdf").startswith("[page 1]")
+
+
+def test_glob_and_grep(ws):
+    assert ws.glob("**/*.py") == "src/app.py"
+    assert "node_modules" not in ws.glob("*.js")
+    assert ws.grep(r"def \w+", file_glob="*.py") == "src/app.py:1: def hello():"
+    assert tools(ws)["grep"].invoke({"pattern": "("}).startswith("Error:")
+
+
+# ---------------------------------------------------------------- write side + approvals
+def test_edit_file_asks_and_writes(ws):
+    seen = []
+    ws.approve = lambda action: seen.append(action) or "yes"
+    assert ws.edit_file("src/app.py", "return 'hi'", "return 'hello'").startswith("Edited")
+    assert "return 'hello'" in (ws.root / "src" / "app.py").read_text()
+    assert seen[0]["kind"] == "edit" and "-    return 'hi'" in seen[0]["diff"]
+
+
+def test_edit_requires_unique_match(ws):
+    (ws.root / "dup.txt").write_text("a\na\n")
+    edit = tools(ws)["edit_file"]
+    assert "appears 2 times" in edit.invoke({"path": "dup.txt", "old_string": "a", "new_string": "b"})
+    assert "not found" in edit.invoke({"path": "dup.txt", "old_string": "zzz", "new_string": "b"})
+    assert edit.invoke({"path": "dup.txt", "old_string": "a", "new_string": "b", "replace_all": True}).startswith("Edited")
+    assert (ws.root / "dup.txt").read_text() == "b\nb\n"
+
+
+def test_declined_actions_change_nothing(ws):
+    ws.approve = lambda action: "no"
+    t = tools(ws)
+    assert "declined" in t["write_file"].invoke({"path": "new.txt", "content": "x"})
+    assert not (ws.root / "new.txt").exists()
+    assert "declined" in t["edit_file"].invoke({"path": "src/app.py", "old_string": "hi", "new_string": "yo"})
+    assert "'hi'" in (ws.root / "src" / "app.py").read_text()
+    assert "declined" in t["run_command"].invoke({"command": "echo pwned > pwned.txt"})
+    assert not (ws.root / "pwned.txt").exists()
+
+
+def test_always_and_modes(ws):
+    calls = []
+    ws.approve = lambda action: calls.append(action) or "always"
+    ws.write_file("a.txt", "1")
+    ws.write_file("b.txt", "2")
+    assert len(calls) == 1  # "always" covers later edits in this session
+    ws.always.clear()
+    ws.mode = "auto-edit"
+    ws.approve = lambda action: "no"
+    assert ws.write_file("c.txt", "3").startswith("Created")
+    assert "declined" in tools(ws)["run_command"].invoke({"command": "echo hi"})
+
+
+def test_run_command_in_root(ws):
+    out = ws.run_command(f'"{sys.executable}" -c "import os; print(os.getcwd())"')
+    assert out.startswith("exit code 0") and str(ws.root) in out
+
+
+def test_write_creates_parents_atomically(ws):
+    assert ws.write_file("deep/dir/new.txt", "hello").startswith("Created")
+    assert (ws.root / "deep" / "dir" / "new.txt").read_text() == "hello"
+    assert not list(ws.root.rglob("*.vesper-tmp"))
+
+
+def test_search_docs_cites_files(ws):
+    found = []
+    ws.on_sources = lambda q, docs: found.append(docs)
+    assert "[notes.md, page 1]" in ws.search_docs("absences") and found
+
+
+# ---------------------------------------------------------------- agent loop
+class ToolFake(GenericFakeChatModel):
+    def bind_tools(self, tools, **kwargs):
+        return self
+
+
+def test_session_runs_tools_and_streams(ws):
+    llm = ToolFake(disable_streaming=True, messages=iter([
+        AIMessage(content="", tool_calls=[{"name": "read_file", "args": {"path": "notes.md"}, "id": "c1"}]),
+        AIMessage(content="", tool_calls=[{"name": "edit_file", "id": "c2", "args": {
+            "path": "notes.md", "old_string": "Two", "new_string": "Three"}}]),
+        AIMessage(content="Done: notes.md now says three."),
+        AIMessage(content="Second answer."),
+    ]))
+    session = Session(llm, ws)
+    events = list(session.ask("Change two to three in notes.md"))
+    kinds = [e for e, _ in events]
+    assert kinds.count("tool_start") == 2 and kinds.count("tool_end") == 2 and kinds[-1] == "done"
+    ends = [d for e, d in events if e == "tool_end"]
+    assert ends[0]["ok"] and "Two absences" in ends[0]["output"]
+    assert ends[1]["ok"] and ends[1]["output"].startswith("Edited")
+    assert "Done" in "".join(d["text"] for e, d in events if e == "token")
+    assert "Three absences" in (ws.root / "notes.md").read_text()
+    n = len(session.history)
+    list(session.ask("thanks"))
+    assert len(session.history) > n  # history carries over
+    session.clear()
+    assert session.history == []

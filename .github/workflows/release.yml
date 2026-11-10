@@ -1,6 +1,6 @@
 name: release
 
-# Push a tag like v0.3.0 to build the Pagewise desktop app for Windows, macOS
+# Push a tag like v0.3.0 to build the Vesper desktop app for Windows, macOS
 # and Linux and attach it to a GitHub release. "Run workflow" builds without
 # releasing.
 on:
@@ -30,7 +30,7 @@ jobs:
         with:
           node-version: 22
 
-      # The React UI builds into src/rag_lab/web, so it must exist before the
+      # The React UI builds into src/vesper/web, so it must exist before the
       # engine is frozen.
       - name: Build the web UI
         if: hashFiles('apps/web/package.json') != ''
@@ -48,16 +48,16 @@ jobs:
 
       - name: Smoke test the packaged app (macOS)
         if: runner.os == 'macOS'
-        run: '"apps/desktop/release/mac-arm64/Pagewise.app/Contents/MacOS/Pagewise" --smoke'
+        run: '"apps/desktop/release/mac-arm64/Vesper.app/Contents/MacOS/Vesper" --smoke'
       - name: Smoke test the packaged app (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $p = Start-Process -FilePath "apps\desktop\release\win-unpacked\Pagewise.exe" -ArgumentList "--smoke" -Wait -PassThru -NoNewWindow
+          $p = Start-Process -FilePath "apps\desktop\release\win-unpacked\Vesper.exe" -ArgumentList "--smoke" -Wait -PassThru -NoNewWindow
           if ($p.ExitCode -ne 0) { throw "smoke test failed: $($p.ExitCode)" }
       - name: Smoke test the packaged app (Linux)
         if: runner.os == 'Linux'
-        run: xvfb-run -a apps/desktop/release/linux-unpacked/pagewise --smoke --no-sandbox
+        run: xvfb-run -a apps/desktop/release/linux-unpacked/vesper --smoke --no-sandbox
 
       - uses: actions/upload-artifact@v4
         with:
@@ -87,20 +87,20 @@ jobs:
         run: |
           gh release create "${{ github.ref_name }}" assets/* \
             --repo "${{ github.repository }}" \
-            --title "Pagewise ${{ github.ref_name }}" \
+            --title "Vesper ${{ github.ref_name }}" \
             --notes-file - <<'EOF'
-          Pagewise desktop app: chat with your documents using OpenAI, Claude, Gemini, DeepSeek, Mistral, Groq, OpenRouter, Ollama and other models.
+          Vesper desktop app: chat with your documents using OpenAI, Claude, Gemini, DeepSeek, Mistral, Groq, OpenRouter, Ollama and other models.
 
           **Install with one command (no security warning):**
 
           macOS (Apple Silicon) and Linux (x86_64):
           ```
-          curl -fsSL https://raw.githubusercontent.com/Kernel-Hunter/rag-langgraph-lab/main/install.sh | bash
+          curl -fsSL https://raw.githubusercontent.com/Kernel-Hunter/vesper/main/install.sh | bash
           ```
 
           Windows (PowerShell):
           ```
-          irm https://raw.githubusercontent.com/Kernel-Hunter/rag-langgraph-lab/main/install.ps1 | iex
+          irm https://raw.githubusercontent.com/Kernel-Hunter/vesper/main/install.ps1 | iex
           ```
 
           The files below are the same app for manual download. Browsers mark them as downloaded, so the first launch shows a warning (macOS: right-click the app, Open; Windows: More info, Run anyway).

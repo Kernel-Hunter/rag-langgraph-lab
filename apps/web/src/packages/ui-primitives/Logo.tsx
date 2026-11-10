@@ -1,6 +1,6 @@
 import { useId } from 'react'
 
-/** Pagewise mark: a page with a folded corner and a spark lifting off the fold. */
+/** Vesper mark: a page with a folded corner and a spark lifting off the fold. */
 export function LogoMark({ size = 30, className }: { size?: number; className?: string }) {
   const id = useId().replace(/:/g, '')
   return (
@@ -26,8 +26,8 @@ export function Wordmark() {
     <div className="brand">
       <LogoMark size={30} />
       <div className="brand-text">
-        <strong>Pagewise</strong>
-        <span>Answers by the page</span>
+        <strong>Vesper</strong>
+        <span>Your agent for every folder</span>
       </div>
     </div>
   )

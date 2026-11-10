@@ -32,7 +32,7 @@ export function App() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       const mod = e.metaKey || e.ctrlKey
-      if (mod && !e.shiftKey && e.key.toLowerCase() === 'n') { e.preventDefault(); newChat(); window.dispatchEvent(new Event('pagewise:focus-composer')) }
+      if (mod && !e.shiftKey && e.key.toLowerCase() === 'n') { e.preventDefault(); newChat(); window.dispatchEvent(new Event('vesper:focus-composer')) }
       else if (mod && e.key === ',') { e.preventDefault(); if (getState().settings.open) closeSettings(); else openSettings() }
       else if (mod && e.key.toLowerCase() === 'b') { e.preventDefault(); toggleSidebar() }
       else if (mod && e.key === 'k') { e.preventDefault(); (document.querySelector('.side-search input') as HTMLInputElement | null)?.focus() }

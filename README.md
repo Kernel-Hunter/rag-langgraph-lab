@@ -1,8 +1,8 @@
-# Pagewise
+# Vesper
 
-<img src="packaging/icon.png" alt="Pagewise icon" width="96" align="right">
+<img src="packaging/icon.png" alt="Vesper icon" width="96" align="right">
 
-Pagewise answers questions from your own documents and shows the page each answer came
+Vesper answers questions from your own documents and shows the page each answer came
 from. It started as the Chapter 5B lab (Prompt Engineering, MedTech), and the retrieval
 code still follows the course slides: LangChain for loading and splitting, LangGraph for
 the graph and the agent. It works with most AI model providers, or fully offline with Ollama.
@@ -14,16 +14,16 @@ One command, with no "unidentified developer" or SmartScreen warning.
 macOS (Apple Silicon) and Linux (x86_64):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Kernel-Hunter/rag-langgraph-lab/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Kernel-Hunter/vesper/main/install.sh | bash
 ```
 
 Windows 10/11 (PowerShell):
 
 ```powershell
-irm https://raw.githubusercontent.com/Kernel-Hunter/rag-langgraph-lab/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/Kernel-Hunter/vesper/main/install.ps1 | iex
 ```
 
-The scripts download the app from the [latest release](https://github.com/Kernel-Hunter/rag-langgraph-lab/releases/latest),
+The scripts download the app from the [latest release](https://github.com/Kernel-Hunter/vesper/releases/latest),
 check it against the release's `SHA256SUMS.txt`, and install it for your user only.
 Browsers tag the files they download, and that tag is what triggers the macOS and Windows
 warnings; `curl` and PowerShell do not add it. If you download the `.dmg` or `.exe` by hand
@@ -44,7 +44,7 @@ Windows: More info, then Run anyway).
 - Themes: system, dark, light and a terminal theme with five phosphor colors. Optional
   background effects (aurora, code rain, CRT scanlines, horizon grid, starfield) run at a
   capped frame rate, pause when the window is hidden, and stay off if your system asks for reduced motion.
-- Chats stay on your computer. Keys are stored in `~/.pagewise/.env` (readable only by your
+- Chats stay on your computer. Keys are stored in `~/.vesper/.env` (readable only by your
   user) and never sent back to the interface.
 
 Start in Settings, Models: paste a key for the provider you use, then pick a model from
@@ -63,13 +63,13 @@ about LangChain and LangGraph.
 
 | Path | What it is |
 |---|---|
-| `src/rag_lab/indexing.py` | Steps 1 to 4: load, split, embed, store |
-| `src/rag_lab/graph.py` | Steps 5 to 7 as a LangGraph graph, plus the `check` node |
-| `src/rag_lab/agent.py` | Agentic RAG with `create_agent` |
-| `src/rag_lab/providers.py` | Every model provider and the local embeddings |
-| `src/rag_lab/server.py` | The engine's API: 127.0.0.1 only, per-launch token, host and origin checks, strict CSP |
-| `src/rag_lab/desktop.py` | Engine entry point (`--engine`), plus a browser mode for development |
-| `apps/web/` | React interface (Vite). `npm run build` writes it into `src/rag_lab/web/` |
+| `src/vesper/indexing.py` | Steps 1 to 4: load, split, embed, store |
+| `src/vesper/graph.py` | Steps 5 to 7 as a LangGraph graph, plus the `check` node |
+| `src/vesper/agent.py` | Agentic RAG with `create_agent` |
+| `src/vesper/providers.py` | Every model provider and the local embeddings |
+| `src/vesper/server.py` | The engine's API: 127.0.0.1 only, per-launch token, host and origin checks, strict CSP |
+| `src/vesper/desktop.py` | Engine entry point (`--engine`), plus a browser mode for development |
+| `apps/web/` | React interface (Vite). `npm run build` writes it into `src/vesper/web/` |
 | `apps/desktop/` | Electron shell: window, engine process, packaging |
 | `packaging/` | Freezes the engine with PyInstaller, draws the icon |
 
@@ -78,8 +78,8 @@ about LangChain and LangGraph.
 Python 3.11 or newer and Node 22.
 
 ```bash
-git clone https://github.com/Kernel-Hunter/rag-langgraph-lab.git
-cd rag-langgraph-lab
+git clone https://github.com/Kernel-Hunter/vesper.git
+cd vesper
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 npm --prefix apps/web install && npm --prefix apps/web run build
@@ -92,7 +92,7 @@ On Windows use `py -m venv .venv` and `.venv\Scripts\Activate.ps1`. Without Elec
 For interface work, run the engine with a fixed port and token, then the Vite dev server:
 
 ```bash
-RAG_LAB_PORT=8765 RAG_LAB_TOKEN=devtoken rag-lab-app --serve
+VESPER_PORT=8765 VESPER_TOKEN=devtoken rag-lab-app --serve
 npm --prefix apps/web run dev   # open http://localhost:5173/#token=devtoken
 ```
 

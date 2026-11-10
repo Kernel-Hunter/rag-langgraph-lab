@@ -5,9 +5,8 @@ import json
 import os
 import tempfile
 
-# Before anything imports rag_lab: never read, migrate or write the real ~/.pagewise or ~/.rag-lab.
-os.environ.pop("PAGEWISE_HOME", None)
-os.environ["RAG_LAB_HOME"] = tempfile.mkdtemp(prefix="pagewise-tests-")
+# Before anything imports vesper: never read, migrate or write the real ~/.vesper or ~/.rag-lab.
+os.environ["VESPER_HOME"] = tempfile.mkdtemp(prefix="vesper-tests-")
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient
@@ -27,9 +26,8 @@ def _restore_environ():
 
 @pytest.fixture
 def home(tmp_path, monkeypatch):
-    monkeypatch.setenv("RAG_LAB_HOME", str(tmp_path))
-    monkeypatch.delenv("PAGEWISE_HOME", raising=False)
-    monkeypatch.delenv("RAG_LAB_FAKE_LLM", raising=False)
+    monkeypatch.setenv("VESPER_HOME", str(tmp_path))
+    monkeypatch.delenv("VESPER_FAKE_LLM", raising=False)
     (tmp_path / "config.json").write_text(json.dumps({"embeddings": "fake", "provider": "ollama"}))
     return tmp_path
 
@@ -37,7 +35,7 @@ def home(tmp_path, monkeypatch):
 @pytest.fixture
 def server(home):
     """The server module, reloaded so its paths point at the temp home."""
-    from rag_lab import providers, server
+    from vesper import providers, server
 
     importlib.reload(providers)
     importlib.reload(server)

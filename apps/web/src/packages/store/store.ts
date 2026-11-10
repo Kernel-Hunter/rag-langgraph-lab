@@ -40,7 +40,7 @@ export interface State {
   toasts: Toast[]
 }
 
-const CHATS_KEY = 'pagewise.chats'
+const CHATS_KEY = 'vesper.chats'
 const MAX_CHATS = 200
 
 const uid = (): string =>
@@ -134,7 +134,7 @@ export async function refresh(): Promise<void> {
   } catch (e) {
     set({ connected: false })
     if (e instanceof ApiError && e.status === 401) {
-      toast('Session expired. Restart Pagewise.', 'error')
+      toast('Session expired. Restart Vesper.', 'error')
       return
     }
   }

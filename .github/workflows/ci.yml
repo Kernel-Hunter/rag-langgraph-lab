@@ -37,8 +37,8 @@ jobs:
       - run: npm --prefix apps/web run typecheck
       - run: npm --prefix apps/web test
       - run: npm --prefix apps/web run build
-      - name: Built UI in src/rag_lab/web is up to date
-        run: git status --porcelain src/rag_lab/web && test -z "$(git status --porcelain src/rag_lab/web)"
+      - name: Built UI in src/vesper/web is up to date
+        run: git status --porcelain src/vesper/web && test -z "$(git status --porcelain src/vesper/web)"
 
   desktop:
     runs-on: ubuntu-latest

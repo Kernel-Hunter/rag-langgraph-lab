@@ -1,4 +1,4 @@
-"""`python -m rag_lab.desktop --engine`: the handshake contract the Electron shell relies on."""
+"""`python -m vesper.desktop --engine`: the handshake contract the Electron shell relies on."""
 
 import json
 import os
@@ -9,14 +9,14 @@ import threading
 import urllib.error
 import urllib.request
 
-READY = re.compile(r'^PAGEWISE_READY \{"port": (\d+), "token": "([^"]+)"\}$')
+READY = re.compile(r'^VESPER_READY \{"port": (\d+), "token": "([^"]+)"\}$')
 
 
 def _launch(tmp_path, **env):
-    full = {**os.environ, "RAG_LAB_HOME": str(tmp_path), "RAG_LAB_FAKE_LLM": "1", "PYTHONUNBUFFERED": "1", **env}
-    full.pop("PAGEWISE_HOME", None)
+    full = {**os.environ, "VESPER_HOME": str(tmp_path), "VESPER_FAKE_LLM": "1", "PYTHONUNBUFFERED": "1", **env}
+    full.pop("VESPER_HOME", None)
     (tmp_path / "config.json").write_text(json.dumps({"embeddings": "fake"}))
-    return subprocess.Popen([sys.executable, "-m", "rag_lab.desktop", "--engine"], env=full,
+    return subprocess.Popen([sys.executable, "-m", "vesper.desktop", "--engine"], env=full,
                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
 
@@ -47,7 +47,7 @@ def test_engine_handshake_and_exit_on_stdin_eof(tmp_path):
         line = _read_line(proc)
         m = READY.match(line)
         assert m, line
-        payload = json.loads(line.removeprefix("PAGEWISE_READY "))
+        payload = json.loads(line.removeprefix("VESPER_READY "))
         assert set(payload) == {"port", "token"} and isinstance(payload["port"], int)
         port, token = int(m.group(1)), m.group(2)
 
@@ -72,10 +72,10 @@ def test_engine_uses_env_token_and_port(tmp_path):
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
-    proc = _launch(tmp_path, RAG_LAB_TOKEN="fixed-token", RAG_LAB_PORT=str(port))
+    proc = _launch(tmp_path, VESPER_TOKEN="fixed-token", VESPER_PORT=str(port))
     try:
         line = _read_line(proc)
-        assert line == f'PAGEWISE_READY {{"port": {port}, "token": "fixed-token"}}'
+        assert line == f'VESPER_READY {{"port": {port}, "token": "fixed-token"}}'
         assert _get(port, "/api/state", "fixed-token")[0] == 200
         proc.stdin.close()
         assert proc.wait(timeout=10) == 0

@@ -1,4 +1,4 @@
-"""Pagewise local API, behind the desktop window.
+"""Vesper local API, behind the desktop window.
 
 Binds to 127.0.0.1 only and requires a per-launch token on every /api call, so
 other websites and other users on the machine cannot drive it. On top of that:
@@ -29,12 +29,12 @@ from fastapi.staticfiles import StaticFiles
 from langchain_core.vectorstores import InMemoryVectorStore
 from starlette.datastructures import MutableHeaders
 
-from rag_lab import providers as prov
-from rag_lab.indexing import load_documents, split_documents
+from vesper import providers as prov
+from vesper.indexing import load_documents, split_documents
 
 if getattr(sys, "frozen", False):
     BUNDLE = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
-    WEB_DIR = BUNDLE / "rag_lab" / "web"
+    WEB_DIR = BUNDLE / "vesper" / "web"
     SAMPLE = BUNDLE / "data" / "handbook.md"
 else:
     WEB_DIR = Path(__file__).parent / "web"
@@ -487,7 +487,7 @@ class Engine:
                 for d in docs]
 
     def _stream_graph(self, question, llm):
-        from rag_lab.graph import build_graph
+        from vesper.graph import build_graph
 
         graph = build_graph(self.store, llm, k=self.settings["k"], check=self.settings["check"])
         streamed = False
@@ -508,7 +508,7 @@ class Engine:
                         yield "token", {"text": text}
 
     def _stream_agent(self, question, llm):
-        from rag_lab.agent import build_agent
+        from vesper.agent import build_agent
 
         searches: list = []
         agent = build_agent(self.store, llm, k=self.settings["k"], recorder=searches)

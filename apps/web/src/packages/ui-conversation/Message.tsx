@@ -47,7 +47,7 @@ function SourceCards({ msg, open, onToggle, highlight }: { msg: Msg; open: boole
 function UserMessage({ msg }: { msg: Msg }) {
   return (
     <div className="msg user">
-      <span className="prompt" aria-hidden="true">guest@pagewise:~$</span>
+      <span className="prompt" aria-hidden="true">guest@vesper:~$</span>
       <div className="bubble">{msg.text}</div>
     </div>
   )

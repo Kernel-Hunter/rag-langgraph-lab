@@ -1,4 +1,4 @@
-"""Pagewise desktop launcher: `rag-lab-app`.
+"""Vesper desktop launcher: `rag-lab-app`.
 
 Modes:
   (no flag)   start the local API on a free 127.0.0.1 port and open the UI in
@@ -12,9 +12,9 @@ Modes:
 
 Handshake printed by --engine once the server is listening (one line, flushed):
 
-    PAGEWISE_READY {"port": 51234, "token": "..."}
+    VESPER_READY {"port": 51234, "token": "..."}
 
-RAG_LAB_PORT fixes the port and RAG_LAB_TOKEN fixes the token in --engine and --serve.
+VESPER_PORT fixes the port and VESPER_TOKEN fixes the token in --engine and --serve.
 """
 
 from __future__ import annotations
@@ -31,8 +31,8 @@ import threading
 import time
 import webbrowser
 
-TITLE = "Pagewise"
-READY_PREFIX = "PAGEWISE_READY"
+TITLE = "Vesper"
+READY_PREFIX = "VESPER_READY"
 
 
 def _free_port() -> int:
@@ -42,11 +42,11 @@ def _free_port() -> int:
 
 
 def _port() -> int:
-    return int(os.getenv("RAG_LAB_PORT") or _free_port())
+    return int(os.getenv("VESPER_PORT") or _free_port())
 
 
 def _token() -> str:
-    return os.getenv("RAG_LAB_TOKEN") or secrets.token_urlsafe(24)
+    return os.getenv("VESPER_TOKEN") or secrets.token_urlsafe(24)
 
 
 def allowed_hosts(port: int) -> list[str]:
@@ -54,7 +54,7 @@ def allowed_hosts(port: int) -> list[str]:
 
 
 def _make_app(token: str, port: int):
-    from rag_lab.server import create_app
+    from vesper.server import create_app
 
     return create_app(token, allowed_hosts=allowed_hosts(port))
 
@@ -103,7 +103,7 @@ def _browser_candidates() -> list[str]:
 
 def _app_mode_browser(url: str) -> bool:
     """Chrome, Chromium, Edge or Brave in --app mode looks like a normal window. Blocks until it closes."""
-    from rag_lab.providers import HOME
+    from vesper.providers import HOME
 
     for exe in _browser_candidates():
         try:
@@ -152,13 +152,13 @@ def smoke_test() -> int:
     """`--smoke`: prove a packaged build starts. Uses a throwaway home folder."""
     import urllib.request
 
-    home = tempfile.mkdtemp(prefix="pagewise-smoke-")
-    os.environ["RAG_LAB_HOME"] = home
-    os.environ.pop("PAGEWISE_HOME", None)
+    home = tempfile.mkdtemp(prefix="vesper-smoke-")
+    os.environ["VESPER_HOME"] = home
+    os.environ.pop("VESPER_HOME", None)
     with open(os.path.join(home, "config.json"), "w") as f:
         json.dump({"embeddings": "fake"}, f)  # no network in the smoke test
 
-    from rag_lab import providers as prov
+    from vesper import providers as prov
 
     for pid in prov.PROVIDERS:  # every client must construct
         prov.get_llm(pid, "smoke-model")
@@ -166,7 +166,7 @@ def smoke_test() -> int:
     token = secrets.token_urlsafe(16)
     app, port, _ = start_server(token)
     app.state.engine.rebuild()
-    from rag_lab.providers import LocalEmbeddings  # bundled ONNX runtime must load
+    from vesper.providers import LocalEmbeddings  # bundled ONNX runtime must load
 
     if getattr(sys, "frozen", False):
         LocalEmbeddings().embed_query("smoke")
@@ -179,7 +179,7 @@ def smoke_test() -> int:
 
 
 def serve_only():
-    """`--serve`: no window, for development. RAG_LAB_PORT / RAG_LAB_TOKEN fix the address."""
+    """`--serve`: no window, for development. VESPER_PORT / VESPER_TOKEN fix the address."""
     import uvicorn
 
     token = _token()

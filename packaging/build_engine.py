@@ -1,13 +1,13 @@
-"""Build the Pagewise engine (the Python backend) for the current OS with PyInstaller.
+"""Build the Vesper engine (the Python backend) for the current OS with PyInstaller.
 
     pip install -e . pyinstaller pillow
     python packaging/build_engine.py
 
-Output: apps/desktop/engine/ holding pagewise-engine (pagewise-engine.exe on
+Output: apps/desktop/engine/ holding vesper-engine (vesper-engine.exe on
 Windows) and its _internal/ folder. electron-builder copies that folder into
 the app as resources/engine, and the Electron shell starts it with --engine.
 
-It is a console program on purpose: the shell reads its PAGEWISE_READY line
+It is a console program on purpose: the shell reads its VESPER_READY line
 from stdout. On Windows the shell starts it with windowsHide, so no console
 window shows.
 """
@@ -21,15 +21,15 @@ from pathlib import Path
 import PyInstaller.__main__
 
 ROOT = Path(__file__).resolve().parents[1]
-NAME = "pagewise-engine"
+NAME = "vesper-engine"
 SEP = os.pathsep
 OUT = ROOT / "apps" / "desktop" / "engine"
 WORK = ROOT / "build" / "engine"
 
 # Ship the local embedding model so the first launch needs no download.
-os.environ["RAG_LAB_HOME"] = MODEL_HOME = tempfile.mkdtemp(prefix="pagewise-build-")
+os.environ["VESPER_HOME"] = MODEL_HOME = tempfile.mkdtemp(prefix="vesper-build-")
 sys.path.insert(0, str(ROOT / "src"))
-from rag_lab.providers import LocalEmbeddings  # noqa: E402
+from vesper.providers import LocalEmbeddings  # noqa: E402
 
 LocalEmbeddings().embed_query("warm up")
 # The Hugging Face cache links snapshot files to blobs with symlinks (also on the
@@ -57,7 +57,7 @@ args = [
     "--noconfirm",
     "--clean",
     "--paths", str(ROOT / "src"),
-    "--add-data", f"{ROOT / 'src' / 'rag_lab' / 'web'}{SEP}rag_lab/web",
+    "--add-data", f"{ROOT / 'src' / 'vesper' / 'web'}{SEP}vesper/web",
     "--add-data", f"{ROOT / 'data' / 'handbook.md'}{SEP}data",
     "--add-data", f"{MODELS}{SEP}models",
     "--distpath", str(WORK / "dist"),
@@ -78,7 +78,7 @@ try:
 finally:
     shutil.rmtree(MODEL_HOME, ignore_errors=True)
 
-# apps/desktop/engine/ is the onedir folder itself: engine/pagewise-engine + engine/_internal.
+# apps/desktop/engine/ is the onedir folder itself: engine/vesper-engine + engine/_internal.
 if OUT.exists():
     shutil.rmtree(OUT)
 shutil.move(str(WORK / "dist" / NAME), str(OUT))

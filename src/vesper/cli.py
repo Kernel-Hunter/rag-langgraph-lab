@@ -3,8 +3,8 @@
 import argparse
 import sys
 
-from rag_lab.indexing import index
-from rag_lab.providers import get_embeddings, get_llm
+from vesper.indexing import index
+from vesper.providers import get_embeddings, get_llm
 
 
 def _common(p: argparse.ArgumentParser) -> None:
@@ -29,7 +29,7 @@ def _setup(args):
 
 
 def _graph_asker(args, vector_store, llm):
-    from rag_lab.graph import build_graph
+    from vesper.graph import build_graph
 
     graph = build_graph(vector_store, llm, k=args.k, check=getattr(args, "check", False))
 
@@ -42,7 +42,7 @@ def _graph_asker(args, vector_store, llm):
 
 
 def _agent_asker(args, vector_store, llm):
-    from rag_lab.agent import ask_agent, build_agent
+    from vesper.agent import ask_agent, build_agent
 
     agent = build_agent(vector_store, llm, k=args.k)
     return lambda question: ask_agent(agent, question)
@@ -63,6 +63,9 @@ def main(argv: list[str] | None = None) -> None:
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")
+    from dotenv import load_dotenv
+
+    load_dotenv()  # the lab commands read keys from the repo's .env
 
     parser = argparse.ArgumentParser(prog="rag-lab", description="Chapter 5B RAG lab")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -107,7 +110,7 @@ def main(argv: list[str] | None = None) -> None:
                 break
             _print_result(ask(question))
     elif args.command == "eval":
-        from rag_lab.evaluate import load_questions, run_eval
+        from vesper.evaluate import load_questions, run_eval
 
         ask = (_agent_asker if args.mode == "agent" else _graph_asker)(args, vector_store, llm)
         label = args.label or f"{args.mode}-cs{args.chunk_size}-k{args.k}"

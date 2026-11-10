@@ -1,9 +1,9 @@
-// electron-builder configuration for Pagewise.
+// electron-builder configuration for Vesper.
 // Adapted from apps/desktop/scripts/electron-builder-config.mjs in
 // deepseek-ai/deepseek-harness (MIT, Copyright (c) 2026 DeepSeek), reduced to
 // the unsigned build path; see THIRD_PARTY_NOTICES.md.
 //
-// The engine folder is the PyInstaller onedir build of src/rag_lab, made by
+// The engine folder is the PyInstaller onedir build of src/vesper, made by
 // `python packaging/build_engine.py` before this runs.
 
 import { existsSync } from 'node:fs'
@@ -13,14 +13,14 @@ const icon = fileURLToPath(new URL('../../../packaging/icon.png', import.meta.ur
 const engine = fileURLToPath(new URL('../engine', import.meta.url))
 
 if (!existsSync(engine)) {
-  throw new Error(`Pagewise engine not found at ${engine}. Run: python packaging/build_engine.py`)
+  throw new Error(`Vesper engine not found at ${engine}. Run: python packaging/build_engine.py`)
 }
 
 export default {
-  appId: 'io.github.kernel-hunter.pagewise',
-  productName: 'Pagewise',
+  appId: 'io.github.kernel-hunter.vesper',
+  productName: 'Vesper',
   copyright: `Copyright © ${new Date().getFullYear()} Karim Masmoudi`,
-  artifactName: 'Pagewise-${version}-${os}-${arch}.${ext}',
+  artifactName: 'Vesper-${version}-${os}-${arch}.${ext}',
   directories: { output: 'release' },
   asar: true,
   files: ['dist/**/*', 'package.json'],
@@ -60,14 +60,14 @@ export default {
     allowToChangeInstallationDirectory: true,
     createDesktopShortcut: true,
     createStartMenuShortcut: true,
-    shortcutName: 'Pagewise',
-    uninstallDisplayName: 'Pagewise',
+    shortcutName: 'Vesper',
+    uninstallDisplayName: 'Vesper',
     differentialPackage: false,
   },
   linux: {
     icon,
     category: 'Office',
-    executableName: 'pagewise',
+    executableName: 'vesper',
     synopsis: 'Chat with your documents',
     target: [{ target: 'AppImage', arch: ['x64'] }, { target: 'tar.gz', arch: ['x64'] }],
   },

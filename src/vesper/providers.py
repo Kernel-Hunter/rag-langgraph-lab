@@ -16,24 +16,25 @@ from pathlib import Path
 from dotenv import load_dotenv
 from langchain_core.embeddings import Embeddings
 
-APP_NAME = "Pagewise"
+APP_NAME = "Vesper"
 
 
 def resolve_home(user_home: Path | None = None) -> Path:
     """Per-user folder: settings, keys, downloaded embedding model, index cache, documents.
 
-    PAGEWISE_HOME or RAG_LAB_HOME override it. Otherwise ~/.pagewise; the first time it
-    is used, the contents of the old ~/.rag-lab folder are copied over (the old folder stays).
+    VESPER_HOME overrides it. Otherwise ~/.vesper; the first time it is used, the
+    contents of an older ~/.pagewise or ~/.rag-lab folder are copied over (the old one stays).
     """
-    override = os.getenv("PAGEWISE_HOME") or os.getenv("RAG_LAB_HOME")
+    override = os.getenv("VESPER_HOME")
     if override:
         return Path(override)
     base = Path(user_home) if user_home is not None else Path.home()
-    new, old = base / ".pagewise", base / ".rag-lab"
-    if not new.exists() and old.is_dir():
+    new = base / ".vesper"
+    old = next((d for d in (base / ".pagewise", base / ".rag-lab") if d.is_dir()), None)
+    if not new.exists() and old is not None:
         import shutil
 
-        tmp = base / ".pagewise.migrating"
+        tmp = base / ".vesper.migrating"
         try:
             shutil.rmtree(tmp, ignore_errors=True)
             # The Chrome app-mode profile is a cache; not worth copying.
@@ -48,8 +49,9 @@ def resolve_home(user_home: Path | None = None) -> Path:
 HOME = resolve_home()
 USER_ENV = HOME / ".env"
 
-load_dotenv()          # project .env wins
-load_dotenv(USER_ENV)  # then the app's saved keys
+# Only the app's own key file. A .env in whatever folder Vesper runs in belongs to that
+# project; the lab commands (`rag-lab`) load the repo's .env themselves.
+load_dotenv(USER_ENV)
 
 
 @dataclass(frozen=True)
@@ -140,8 +142,8 @@ FAKE_ANSWER = "Two absences are allowed [page 3]."
 
 
 def fake_llm_enabled() -> bool:
-    """RAG_LAB_FAKE_LLM=1: offline fake chat model and fake embeddings, for UI end-to-end tests."""
-    return os.getenv("RAG_LAB_FAKE_LLM", "").strip().lower() in {"1", "true", "yes"}
+    """VESPER_FAKE_LLM=1: offline fake chat model and fake embeddings, for UI end-to-end tests."""
+    return os.getenv("VESPER_FAKE_LLM", "").strip().lower() in {"1", "true", "yes"}
 
 
 def _fake_chat_model():

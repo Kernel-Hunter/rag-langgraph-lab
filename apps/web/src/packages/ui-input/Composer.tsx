@@ -31,8 +31,8 @@ export function Composer() {
   useEffect(() => { ref.current?.focus() }, [chatId])
   useEffect(() => {
     const focus = (): void => ref.current?.focus()
-    window.addEventListener('pagewise:focus-composer', focus)
-    return () => window.removeEventListener('pagewise:focus-composer', focus)
+    window.addEventListener('vesper:focus-composer', focus)
+    return () => window.removeEventListener('vesper:focus-composer', focus)
   }, [])
 
   const submit = (): void => {

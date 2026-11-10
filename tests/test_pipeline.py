@@ -5,9 +5,9 @@ from pathlib import Path
 from langchain_core.embeddings import DeterministicFakeEmbedding
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
 
-from rag_lab.evaluate import run_eval, score
-from rag_lab.graph import build_graph
-from rag_lab.indexing import build_vector_store, load_documents, split_documents
+from vesper.evaluate import run_eval, score
+from vesper.graph import build_graph
+from vesper.indexing import build_vector_store, load_documents, split_documents
 
 ROOT = Path(__file__).resolve().parents[1]
 HANDBOOK = ROOT / "data" / "handbook.md"

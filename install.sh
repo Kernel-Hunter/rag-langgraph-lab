@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Install Pagewise on macOS (Apple Silicon) or Linux (x86_64).
+# Install Vesper on macOS (Apple Silicon) or Linux (x86_64).
 #
-#   curl -fsSL https://raw.githubusercontent.com/Kernel-Hunter/rag-langgraph-lab/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/Kernel-Hunter/vesper/main/install.sh | bash
 #
 # Files downloaded with curl are not marked "from the internet" (no quarantine
 # flag), so macOS opens the app without the "cannot be opened" Gatekeeper
@@ -9,10 +9,10 @@
 # app, a launcher and a menu entry.
 set -euo pipefail
 
-REPO="Kernel-Hunter/rag-langgraph-lab"
+REPO="Kernel-Hunter/vesper"
 API="https://api.github.com/repos/$REPO/releases/latest"
 ICON_URL="https://raw.githubusercontent.com/$REPO/main/packaging/icon.png"
-APP="Pagewise"
+APP="Vesper"
 tmp="$(mktemp -d)"
 trap 'rm -rf "${tmp:?}"' EXIT
 
@@ -50,7 +50,7 @@ case "$(uname -s)" in
     fi
     url="$(asset_url '-mac-arm64\.zip')"
     [ -n "$url" ] || { echo "Could not find the macOS download in the latest release." >&2; exit 1; }
-    say "Downloading Pagewise for macOS…"
+    say "Downloading Vesper for macOS…"
     curl -fL --progress-bar "$url" -o "$tmp/app.zip"
     verify "$tmp/app.zip" "${url##*/}"
     ditto -x -k "$tmp/app.zip" "$tmp/unpacked"
@@ -64,10 +64,10 @@ case "$(uname -s)" in
     for old in "/Applications/RAG-Help-Desk.app" "$HOME/Applications/RAG-Help-Desk.app"; do
       if [ -d "$old" ]; then
         rm -rf "${old:?}"
-        say "Replaced the old RAG Help Desk app ($old) with Pagewise."
+        say "Replaced the old RAG Help Desk app ($old) with Vesper."
       fi
     done
-    say "Done. Opening Pagewise (find it later in Launchpad or Spotlight)."
+    say "Done. Opening Vesper (find it later in Launchpad or Spotlight)."
     open "$dest/$APP.app"
     ;;
   Linux)
@@ -77,22 +77,22 @@ case "$(uname -s)" in
     fi
     url="$(asset_url '\.AppImage')"
     [ -n "$url" ] || { echo "Could not find the Linux download in the latest release." >&2; exit 1; }
-    say "Downloading Pagewise for Linux…"
-    curl -fL --progress-bar "$url" -o "$tmp/Pagewise.AppImage"
-    verify "$tmp/Pagewise.AppImage" "${url##*/}"
-    dest="$HOME/.local/share/pagewise"
+    say "Downloading Vesper for Linux…"
+    curl -fL --progress-bar "$url" -o "$tmp/Vesper.AppImage"
+    verify "$tmp/Vesper.AppImage" "${url##*/}"
+    dest="$HOME/.local/share/vesper"
     mkdir -p "$dest" "$HOME/.local/bin" "$HOME/.local/share/applications"
-    rm -f "${dest:?}/Pagewise.AppImage"
-    mv "$tmp/Pagewise.AppImage" "$dest/Pagewise.AppImage"
-    chmod +x "$dest/Pagewise.AppImage"
+    rm -f "${dest:?}/Vesper.AppImage"
+    mv "$tmp/Vesper.AppImage" "$dest/Vesper.AppImage"
+    chmod +x "$dest/Vesper.AppImage"
     curl -fsSL "$ICON_URL" -o "$dest/icon.png" || true
-    ln -sf "$dest/Pagewise.AppImage" "$HOME/.local/bin/pagewise"
-    cat > "$HOME/.local/share/applications/pagewise.desktop" <<EOF
+    ln -sf "$dest/Vesper.AppImage" "$HOME/.local/bin/vesper"
+    cat > "$HOME/.local/share/applications/vesper.desktop" <<EOF
 [Desktop Entry]
 Type=Application
-Name=Pagewise
+Name=Vesper
 Comment=Chat with your documents using any AI model
-Exec=$dest/Pagewise.AppImage %U
+Exec=$dest/Vesper.AppImage %U
 Icon=$dest/icon.png
 Terminal=false
 Categories=Office;
@@ -101,9 +101,9 @@ EOF
     old="$HOME/.local/share/rag-help-desk"
     if [ -d "$old" ]; then
       rm -rf "${old:?}" "$HOME/.local/bin/rag-help-desk" "$HOME/.local/share/applications/rag-help-desk.desktop"
-      say "Replaced the old RAG Help Desk app with Pagewise."
+      say "Replaced the old RAG Help Desk app with Vesper."
     fi
-    say "Done. Start it from your app menu (\"Pagewise\") or run: pagewise"
+    say "Done. Start it from your app menu (\"Vesper\") or run: vesper"
     say "If it does not start, install libfuse2 (Ubuntu/Debian: sudo apt install libfuse2)."
     ;;
   *)

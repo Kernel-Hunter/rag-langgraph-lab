@@ -4,7 +4,7 @@ from pathlib import Path
 
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
 
-from rag_lab import cli
+from vesper import cli
 
 ROOT = Path(__file__).resolve().parents[1]
 

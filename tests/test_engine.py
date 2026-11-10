@@ -9,7 +9,7 @@ import time
 import pypdf
 import pytest
 
-from rag_lab import indexing
+from vesper import indexing
 
 
 # ----- sample handbook is seeded once -----
@@ -193,10 +193,10 @@ def test_index_has_warnings_field_when_empty(server):
     assert engine.index == {"status": "empty", "chunks": 0, "pages": 0, "error": None, "warnings": []}
 
 
-# ----- RAG_LAB_FAKE_LLM -----
+# ----- VESPER_FAKE_LLM -----
 
 def test_fake_llm_streams_through_graph(server, monkeypatch):
-    monkeypatch.setenv("RAG_LAB_FAKE_LLM", "1")
+    monkeypatch.setenv("VESPER_FAKE_LLM", "1")
     prov = server.prov
     from langchain_core.embeddings import DeterministicFakeEmbedding
 
@@ -213,7 +213,7 @@ def test_fake_llm_streams_through_graph(server, monkeypatch):
 
 
 def test_fake_llm_agent_mode(server, monkeypatch):
-    monkeypatch.setenv("RAG_LAB_FAKE_LLM", "1")
+    monkeypatch.setenv("VESPER_FAKE_LLM", "1")
     engine = server.Engine()
     engine.rebuild()
     engine.settings["mode"] = "agent"
@@ -223,7 +223,7 @@ def test_fake_llm_agent_mode(server, monkeypatch):
 
 
 def test_fake_llm_off_by_default(server, monkeypatch):
-    monkeypatch.delenv("RAG_LAB_FAKE_LLM", raising=False)
+    monkeypatch.delenv("VESPER_FAKE_LLM", raising=False)
     from langchain_openai import ChatOpenAI
 
     assert isinstance(server.prov.get_llm("ollama"), ChatOpenAI)
@@ -233,16 +233,16 @@ def test_fake_llm_off_by_default(server, monkeypatch):
 
 @pytest.fixture
 def no_home_env(monkeypatch):
-    monkeypatch.delenv("RAG_LAB_HOME", raising=False)
-    monkeypatch.delenv("PAGEWISE_HOME", raising=False)
-    from rag_lab import providers
+    monkeypatch.delenv("VESPER_HOME", raising=False)
+    monkeypatch.delenv("VESPER_HOME", raising=False)
+    from vesper import providers
 
     return providers
 
 
-def test_home_defaults_to_pagewise(tmp_path, no_home_env):
-    assert no_home_env.resolve_home(tmp_path) == tmp_path / ".pagewise"
-    assert not (tmp_path / ".pagewise").exists()  # created later, by the engine
+def test_home_defaults_to_vesper(tmp_path, no_home_env):
+    assert no_home_env.resolve_home(tmp_path) == tmp_path / ".vesper"
+    assert not (tmp_path / ".vesper").exists()  # created later, by the engine
 
 
 def test_home_migrates_old_folder_once(tmp_path, no_home_env):
@@ -253,7 +253,7 @@ def test_home_migrates_old_folder_once(tmp_path, no_home_env):
     (old / "browser-profile").mkdir()
     (old / "browser-profile" / "cache").write_text("big")
     home = no_home_env.resolve_home(tmp_path)
-    assert home == tmp_path / ".pagewise"
+    assert home == tmp_path / ".vesper"
     assert (home / "docs" / "a.md").read_text() == "A"
     assert (home / ".env").read_text() == "GROQ_API_KEY=x\n"
     assert not (home / "browser-profile").exists()
@@ -264,16 +264,16 @@ def test_home_migrates_old_folder_once(tmp_path, no_home_env):
 
 
 def test_home_env_overrides(tmp_path, monkeypatch, no_home_env):
-    monkeypatch.setenv("RAG_LAB_HOME", str(tmp_path / "r"))
+    monkeypatch.setenv("VESPER_HOME", str(tmp_path / "r"))
     assert no_home_env.resolve_home(tmp_path) == tmp_path / "r"
-    monkeypatch.setenv("PAGEWISE_HOME", str(tmp_path / "p"))
+    monkeypatch.setenv("VESPER_HOME", str(tmp_path / "p"))
     assert no_home_env.resolve_home(tmp_path) == tmp_path / "p"
 
 
 def test_module_home_follows_env(tmp_path, monkeypatch):
-    monkeypatch.delenv("RAG_LAB_HOME", raising=False)
-    monkeypatch.setenv("PAGEWISE_HOME", str(tmp_path))
-    from rag_lab import providers
+    monkeypatch.delenv("VESPER_HOME", raising=False)
+    monkeypatch.setenv("VESPER_HOME", str(tmp_path))
+    from vesper import providers
 
     try:
         assert importlib.reload(providers).HOME == tmp_path

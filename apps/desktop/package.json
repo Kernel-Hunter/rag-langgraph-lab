@@ -1,11 +1,11 @@
 {
-  "name": "pagewise-desktop",
-  "productName": "Pagewise",
+  "name": "vesper-desktop",
+  "productName": "Vesper",
   "version": "0.3.1",
   "private": true,
-  "description": "Pagewise desktop app: chat with your documents.",
+  "description": "Vesper desktop app: chat with your documents.",
   "author": "Karim Masmoudi",
-  "homepage": "https://github.com/Kernel-Hunter/rag-langgraph-lab",
+  "homepage": "https://github.com/Kernel-Hunter/vesper",
   "main": "dist/main.js",
   "scripts": {
     "build": "tsc -p tsconfig.json",

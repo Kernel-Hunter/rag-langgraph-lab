@@ -1,5 +1,5 @@
-// The engine is the Python backend (src/rag_lab) running as a child process.
-// It prints one `PAGEWISE_READY {"port": ..., "token": "..."}` line on stdout
+// The engine is the Python backend (src/vesper) running as a child process.
+// It prints one `VESPER_READY {"port": ..., "token": "..."}` line on stdout
 // once its local server listens, and exits when its stdin closes, so it never
 // outlives the app even if Electron itself crashes.
 
@@ -11,7 +11,7 @@ import { join, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
 import { app } from 'electron'
 
-const READY_PREFIX = 'PAGEWISE_READY '
+const READY_PREFIX = 'VESPER_READY '
 const READY_TIMEOUT_MS = 60_000
 const STOP_GRACE_MS = 3_000
 const LOG_LINES = 40
@@ -51,11 +51,11 @@ export function engineCommand(): EngineCommand {
   const windows = process.platform === 'win32'
   if (app.isPackaged) {
     const dir = join(process.resourcesPath, 'engine')
-    return { file: join(dir, windows ? 'pagewise-engine.exe' : 'pagewise-engine'), args: ['--engine'], cwd: dir }
+    return { file: join(dir, windows ? 'vesper-engine.exe' : 'vesper-engine'), args: ['--engine'], cwd: dir }
   }
   const repo = resolve(app.getAppPath(), '..', '..')
   const python = windows ? join(repo, '.venv', 'Scripts', 'python.exe') : join(repo, '.venv', 'bin', 'python')
-  return { file: python, args: ['-m', 'rag_lab.desktop', '--engine'], cwd: repo }
+  return { file: python, args: ['-m', 'vesper.desktop', '--engine'], cwd: repo }
 }
 
 export class EngineError extends Error {
@@ -84,7 +84,7 @@ export class Engine extends EventEmitter {
   }
 
   async start(): Promise<EngineInfo> {
-    const port = this.env.RAG_LAB_PORT ? undefined : await pickPort()
+    const port = this.env.VESPER_PORT ? undefined : await pickPort()
     try {
       return await this.launch(port)
     } catch (err) {
@@ -97,11 +97,11 @@ export class Engine extends EventEmitter {
     this.stopping = false
     const cmd = engineCommand()
     if (!existsSync(cmd.file)) {
-      throw new EngineError(`The Pagewise engine was not found at ${cmd.file}.`, '')
+      throw new EngineError(`The Vesper engine was not found at ${cmd.file}.`, '')
     }
     const child = spawn(cmd.file, cmd.args, {
       cwd: cmd.cwd,
-      env: { ...this.env, ...(port ? { RAG_LAB_PORT: String(port) } : {}), PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' },
+      env: { ...this.env, ...(port ? { VESPER_PORT: String(port) } : {}), PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' },
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
     })
@@ -123,11 +123,11 @@ export class Engine extends EventEmitter {
         rejectReady(new EngineError(message, this.log.join('\n')))
       }
       const timer = setTimeout(() => {
-        fail('The Pagewise engine did not start within 60 seconds.')
+        fail('The Vesper engine did not start within 60 seconds.')
         child.kill()
       }, READY_TIMEOUT_MS)
-      child.once('error', err => fail(`The Pagewise engine could not be started: ${err.message}`))
-      child.once('exit', (code, signal) => fail(`The Pagewise engine stopped while starting (${signal ?? `exit code ${code}`}).`))
+      child.once('error', err => fail(`The Vesper engine could not be started: ${err.message}`))
+      child.once('exit', (code, signal) => fail(`The Vesper engine stopped while starting (${signal ?? `exit code ${code}`}).`))
       const lines = createInterface({ input: child.stdout! })
       lines.on('line', (line) => {
         if (settled || !line.startsWith(READY_PREFIX)) {
@@ -144,7 +144,7 @@ export class Engine extends EventEmitter {
           clearTimeout(timer)
           resolveReady({ port, token: ready.token, origin, url: `${origin}/#token=${encodeURIComponent(ready.token)}` })
         } catch {
-          fail(`The Pagewise engine sent an unreadable start signal: ${line}`)
+          fail(`The Vesper engine sent an unreadable start signal: ${line}`)
           child.kill()
         }
       })
@@ -156,7 +156,7 @@ export class Engine extends EventEmitter {
       if (this.child !== child) return
       this.child = undefined
       if (this.stopping) return
-      void this.recover(`The Pagewise engine stopped unexpectedly (${signal ?? `exit code ${code}`}).`)
+      void this.recover(`The Vesper engine stopped unexpectedly (${signal ?? `exit code ${code}`}).`)
     })
     return info
   }

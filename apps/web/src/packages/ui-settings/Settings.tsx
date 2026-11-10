@@ -93,7 +93,7 @@ function ModelsTab() {
           {cloud.map(p => <KeyRow key={p.id} p={p} focus={focus === p.id} />)}
         </div>
       </Section>
-      <Section title="Local and custom" desc={`Run models on your own machine with ${local.map(p => p.label).join(', ')}, or point Pagewise at any OpenAI-compatible server.`}>
+      <Section title="Local and custom" desc={`Run models on your own machine with ${local.map(p => p.label).join(', ')}, or point Vesper at any OpenAI-compatible server.`}>
         <form className="key-input" onSubmit={e => { e.preventDefault(); void saveSettings({ custom_base_url: url.trim() }, 'Custom server saved') }}>
           <input className="input" value={url} onChange={e => setUrl(e.target.value)} placeholder="http://localhost:8000/v1" aria-label="Custom base URL" spellCheck={false} />
           <button type="submit" className="btn primary" disabled={url.trim() === server.custom_base_url}>Save</button>

@@ -1,6 +1,6 @@
-# Install Pagewise on Windows 10/11.
+# Install Vesper on Windows 10/11.
 #
-#   irm https://raw.githubusercontent.com/Kernel-Hunter/rag-langgraph-lab/main/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/Kernel-Hunter/vesper/main/install.ps1 | iex
 #
 # A file downloaded by PowerShell carries no "downloaded from the internet" mark
 # (Mark-of-the-Web), so SmartScreen does not stop the installer. It installs for
@@ -8,14 +8,14 @@
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
-$api = 'https://api.github.com/repos/Kernel-Hunter/rag-langgraph-lab/releases/latest'
+$api = 'https://api.github.com/repos/Kernel-Hunter/vesper/releases/latest'
 $release = Invoke-WebRequest -Uri $api -UseBasicParsing -Headers @{ Accept = 'application/vnd.github+json' } |
   Select-Object -ExpandProperty Content | ConvertFrom-Json
-$asset = $release.assets | Where-Object { $_.name -like 'Pagewise-*-win-*.exe' } | Select-Object -First 1
+$asset = $release.assets | Where-Object { $_.name -like 'Vesper-*-win-*.exe' } | Select-Object -First 1
 if (-not $asset) { throw 'Could not find the Windows installer in the latest release.' }
 
 $setup = Join-Path $env:TEMP $asset.name
-Write-Host "==> Downloading Pagewise $($release.tag_name)..." -ForegroundColor Magenta
+Write-Host "==> Downloading Vesper $($release.tag_name)..." -ForegroundColor Magenta
 Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $setup -UseBasicParsing
 
 # Check the installer against SHA256SUMS.txt from the same release.
@@ -30,11 +30,11 @@ if (-not $want -or $want -ne $got) { Remove-Item $setup -Force; throw "Checksum 
 Write-Host '==> Checksum OK' -ForegroundColor Magenta
 
 Write-Host '==> Installing...' -ForegroundColor Magenta
-# /S = NSIS silent install, per user, into %LOCALAPPDATA%\Programs\Pagewise.
+# /S = NSIS silent install, per user, into %LOCALAPPDATA%\Programs\Vesper.
 $p = Start-Process -FilePath $setup -ArgumentList '/S' -Wait -PassThru
 Remove-Item $setup -Force
 if ($p.ExitCode -ne 0) { throw "The installer failed (exit code $($p.ExitCode))." }
 
-$exe = Join-Path $env:LOCALAPPDATA 'Programs\Pagewise\Pagewise.exe'
-Write-Host '==> Done. Starting Pagewise (also in the Start menu).' -ForegroundColor Magenta
+$exe = Join-Path $env:LOCALAPPDATA 'Programs\Vesper\Vesper.exe'
+Write-Host '==> Done. Starting Vesper (also in the Start menu).' -ForegroundColor Magenta
 Start-Process $exe

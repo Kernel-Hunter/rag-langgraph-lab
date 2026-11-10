@@ -7,7 +7,7 @@ deepseek-reasoner and small Ollama models may not).
 from langchain.agents import create_agent
 from langchain.tools import tool
 
-from rag_lab.graph import format_context
+from vesper.graph import format_context
 
 SYSTEM_PROMPT = (
     "You are the help desk of MEDTECH. For course questions call search_handbook "

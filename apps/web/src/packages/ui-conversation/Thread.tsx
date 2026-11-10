@@ -20,7 +20,7 @@ function Empty() {
     <div className="empty">
       <LogoMark size={56} className="empty-logo" />
       {theme === 'terminal' ? (
-        <pre className="boot" aria-label="Pagewise ready">{`PAGEWISE v0.3 :: retrieval shell
+        <pre className="boot" aria-label="Vesper ready">{`VESPER v0.3 :: retrieval shell
 > docs loaded ........ ${docs}
 > chunks indexed ..... ${idx?.chunks ?? 0}
 > status ............. ${(idx?.status ?? 'connecting').toUpperCase()}

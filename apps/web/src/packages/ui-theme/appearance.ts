@@ -9,7 +9,7 @@ export interface Appearance {
   intensity: number // 0..100
 }
 
-const KEY = 'pagewise.appearance'
+const KEY = 'vesper.appearance'
 const THEMES: ThemeChoice[] = ['system', 'dark', 'light', 'terminal']
 const PHOSPHORS: Phosphor[] = ['green', 'amber', 'cyan', 'white', 'red']
 export const EFFECTS: { id: EffectChoice; label: string; hint: string }[] = [

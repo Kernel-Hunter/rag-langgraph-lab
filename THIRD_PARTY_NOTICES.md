@@ -1,6 +1,6 @@
 # Third-party notices
 
-Pagewise includes code adapted from the projects below. Their licenses apply
+Vesper includes code adapted from the projects below. Their licenses apply
 to those parts.
 
 ## deepseek-ai/deepseek-harness
@@ -16,7 +16,7 @@ Adapted in the Electron desktop shell:
   configuration, reduced to the unsigned build path, from
   `apps/desktop/scripts/electron-builder-config.mjs`.
 
-Pagewise is not affiliated with DeepSeek and uses none of its names or artwork.
+Vesper is not affiliated with DeepSeek and uses none of its names or artwork.
 
 ```
 MIT License

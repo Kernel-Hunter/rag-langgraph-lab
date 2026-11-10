@@ -1,4 +1,4 @@
-"""Draw packaging/icon.png (1024 px), the Pagewise app icon.
+"""Draw packaging/icon.png (1024 px), the Vesper app icon.
 
 Same mark as the UI logo (apps/web/src/packages/ui-primitives/Logo.tsx): a page with a
 folded corner, three lines of text and a spark, on a dark rounded tile.

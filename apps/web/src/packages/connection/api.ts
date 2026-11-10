@@ -59,10 +59,10 @@ const TOKEN = (() => {
   const match = location.hash.match(/token=([A-Za-z0-9_\-]+)/)
   try {
     if (match?.[1]) {
-      sessionStorage.setItem('pagewise.token', match[1])
+      sessionStorage.setItem('vesper.token', match[1])
       history.replaceState(null, '', location.pathname + location.search)
     }
-    return sessionStorage.getItem('pagewise.token') ?? match?.[1] ?? ''
+    return sessionStorage.getItem('vesper.token') ?? match?.[1] ?? ''
   } catch {
     return match?.[1] ?? ''
   }
