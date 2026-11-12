@@ -1,6 +1,6 @@
 [project]
 name = "vesper-agent"
-version = "0.5.0"
+version = "0.6.0"
 description = "Vesper: an open source AI coding agent for your terminal and desktop. It reads, searches and edits files, runs commands with your approval, moves between projects, and saves every session in SQLite. Built on LangChain and LangGraph, works with 17 model providers or fully offline."
 readme = "README.md"
 requires-python = ">=3.11"

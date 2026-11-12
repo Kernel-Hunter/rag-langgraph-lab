@@ -15,6 +15,7 @@ from rich import box
 from rich.console import Console, Group
 from rich.live import Live
 from rich.markdown import Markdown
+from rich.padding import Padding
 from rich.panel import Panel
 from rich.spinner import Spinner
 from rich.syntax import Syntax
@@ -47,6 +48,7 @@ MAIN_ARG = {
     "run_command": "command",
 }
 LIVE_OUTPUT_LINES = 5     # lines of a running command kept on screen
+LIVE_THOUGHT_LINES = 4    # lines of the model's thinking kept on screen while it thinks
 VERBOSE_OUTPUT_LINES = 60  # lines of tool output shown in verbose mode
 AUTO_DIFF_LINES = 24      # lines of a diff shown for an edit that did not need approval
 
@@ -280,6 +282,8 @@ class Renderer:
         self.buffer = ""
         self.live: Live | None = None
         self.busy = _Busy()
+        self.thinking = ""                      # reasoning text of the step in progress
+        self.thinking_since: float | None = None
 
     def _renderable(self):
         return Markdown(self.buffer) if self.buffer.strip() else self.busy
@@ -302,6 +306,36 @@ class Renderer:
     def output(self, line: str) -> None:
         """One more line from a running command."""
         self.busy.tail = [*self.busy.tail, line][-LIVE_OUTPUT_LINES:]
+
+    def progress(self, status: str) -> None:
+        """Change the spinner text without restarting its clock (a tool call being written)."""
+        self.busy.status = status
+        self.start()
+
+    def thought(self, text: str) -> None:
+        """One more piece of the model's thinking: its last lines scroll under the spinner."""
+        if self.thinking_since is None:
+            self.thinking_since = time.monotonic()
+            self.busy.status = "Thinking"
+        self.thinking += text
+        width = max(20, console.width - 8)
+        rows = [row[i:i + width] for row in self.thinking.splitlines() if row.strip() for i in range(0, len(row), width)]
+        self.busy.tail = rows[-LIVE_THOUGHT_LINES:]
+        self.start()
+
+    def end_thought(self, verbose: bool) -> None:
+        """The model stopped thinking: leave one line behind, or the whole text in transcript view."""
+        text, began = self.thinking.strip(), self.thinking_since
+        self.thinking, self.thinking_since, self.busy.tail = "", None, []
+        if not text:
+            return
+        self.stop()
+        took = fmt_duration(time.monotonic() - (began or time.monotonic()))
+        if verbose:
+            console.print(Text(f"✻ Thinking ({took})", style=f"italic {ACCENT}"))
+            console.print(Padding(Text(text, style=f"italic {MUTED}"), (0, 0, 0, 2)))
+        else:
+            console.print(Text(f"✻ Thought for {took}", style=f"italic {MUTED}"))
 
     def token(self, text: str) -> None:
         self.buffer += text
@@ -357,6 +391,47 @@ def recap(session, row: dict) -> None:
         body = text_of(msg.content).split("\n\n<file path=")[0].strip().splitlines()
         shown = " ".join(body[:4])[:300] + (" …" if len(body) > 4 or len(" ".join(body[:4])) > 300 else "")
         console.print(Text.assemble((f"  {who:>6}  ", MUTED), (shown, MUTED)))
+
+
+def tool_detail(name: str, args: dict) -> Text | Syntax | None:
+    """What a tool call was asked to do, in full: the command, the edit as a diff, the file written."""
+    if name == "run_command":
+        return Text("$ " + str(args.get("command", "")), style="bold")
+    if name == "edit_file":
+        diff = "\n".join([*("-" + row for row in str(args.get("old_string", "")).splitlines()),
+                          *("+" + row for row in str(args.get("new_string", "")).splitlines())])
+        return Syntax(diff, "diff", theme="ansi_dark", word_wrap=True)
+    if name == "write_file":
+        rows = str(args.get("content", "")).splitlines()
+        body = "\n".join("+" + row for row in rows[:VERBOSE_OUTPUT_LINES])
+        if len(rows) > VERBOSE_OUTPUT_LINES:
+            body += f"\n… {len(rows) - VERBOSE_OUTPUT_LINES} more lines"
+        return Syntax(body, "diff", theme="ansi_dark", word_wrap=True)
+    return None
+
+
+def print_transcript(turns: list[dict]) -> None:
+    """The whole conversation in detail: prompts, thinking, every tool call with its input and output."""
+    for turn in turns:
+        console.print()
+        if turn["role"] == "user":
+            console.print(Text.assemble(("❯ ", f"bold {ACCENT}"), (turn["text"], "bold")))
+            continue
+        for part in turn["parts"]:
+            if part["type"] == "reasoning":
+                console.print(Text("✻ Thinking", style=f"italic {ACCENT}"))
+                console.print(Padding(Text(part["text"], style=f"italic {MUTED}"), (0, 0, 0, 2)))
+            elif part["type"] == "text":
+                console.print(Markdown(part["text"]))
+            else:
+                console.print(tool_start_line(part["name"], part["args"]))
+                detail = tool_detail(part["name"], part["args"])
+                if detail is not None:
+                    console.print(Padding(detail, (0, 0, 0, 5)))
+                if part["output"] is None:
+                    console.print(Text("  ⎿  (stopped before it finished)", style=WARN))
+                else:
+                    console.print(tool_end_line(part["name"], part["output"], bool(part["ok"]), None, verbose=True))
 
 
 def print_events(events: list[dict], full: bool = False, out: Console | None = None) -> None:

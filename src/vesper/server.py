@@ -60,6 +60,7 @@ MAX_SESSIONS = 30
 APPROVAL_TIMEOUT_S = 600
 MAX_HISTORY_TURNS = 40
 CHAT_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+SESSION_ID = re.compile(r"^[0-9a-f]{4,32}$")  # an id from the session database, or its first characters
 
 SECURITY_HEADERS = {
     "Content-Security-Policy": (
@@ -513,11 +514,15 @@ class Engine:
             self._llm_key = key
         return self._llm
 
-    def stream_answer(self, question: str, chat_id: str | None = None, history: list | None = None):
-        """Yields (event, data) pairs for the chat stream."""
+    def stream_answer(self, question: str, chat_id: str | None = None, history: list | None = None,
+                      session_id: str | None = None):
+        """Yields (event, data) pairs for the chat stream.
+
+        `session_id` continues a conversation saved in the session database (Folder mode).
+        """
         s = self.settings
         if s["mode"] == "folder":
-            yield from self._stream_folder(question, chat_id or "default", history or [])
+            yield from self._stream_folder(question, chat_id or "default", history or [], session_id)
             return
         if self.store is None:
             msg = self.index.get("error") or "Add a document first, then ask."
@@ -582,7 +587,7 @@ class Engine:
                         yield "token", {"text": text}
 
     # ----- folder agent -----
-    def _folder_session(self, chat_id: str, history: list):
+    def _folder_session(self, chat_id: str, history: list, session_id: str | None = None):
         """The agent session for one chat, rebuilt when the model changes. It follows the folder
         picked in the app, and the agent may move on from there itself."""
         from langchain_core.messages import AIMessage, HumanMessage
@@ -603,13 +608,21 @@ class Engine:
                     ws.change_directory(s["workspace"])
                 return entry
             emb = s["embeddings"]
+            db = self.history_db()
+            saved = db.get_session(session_id) if db is not None and session_id and entry is None else None
+            if saved and Path(saved["cwd"]).is_dir():  # a saved conversation continues where it was
+                self.settings["workspace"] = saved["cwd"]
+                self.save()
             ws = Workspace(Path(s["workspace"]), mode=s["agent_mode"],
                            embeddings_factory=lambda: prov.get_embeddings(emb, s["embed_model"] or None))
-            session = Session(self.llm(), ws, self.history_db(), source="desktop", provider=s["provider"],
-                              model=s["model"], context_tokens=prov.context_tokens(s["provider"]))
+            session = Session(self.llm(), ws, db, session_id=saved["id"] if saved else None, source="desktop",
+                              provider=s["provider"], model=s["model"],
+                              context_tokens=prov.context_tokens(s["provider"]))
             if entry is not None:
                 old = entry["session"]  # same chat, new model: keep the conversation and its saved row
                 session.history, session.id, session.title, session._saved = old.history, old.id, old.title, old._saved
+            elif saved:
+                pass  # the history came from the database
             else:
                 for turn in history[-MAX_HISTORY_TURNS:]:
                     text = str(turn.get("text", ""))[:20000] if isinstance(turn, dict) else ""
@@ -621,14 +634,14 @@ class Engine:
                 self._sessions.popitem(last=False)
             return entry
 
-    def _stream_folder(self, question: str, chat_id: str, history: list):
+    def _stream_folder(self, question: str, chat_id: str, history: list, session_id: str | None = None):
         s = self.settings
         if not s["workspace"]:
             yield "error", {"message": "Open a folder first: click the folder button at the top."}
             yield "done", {}
             return
         try:
-            entry = self._folder_session(chat_id, history)
+            entry = self._folder_session(chat_id, history, session_id)
         except Exception as exc:
             yield "error", {"message": friendly_error(exc, s["provider"])}
             yield "done", {}
@@ -658,6 +671,10 @@ class Engine:
             return slot["answer"] if answered and not closed.is_set() else "no"
 
         session.workspace.approve = approve
+        # Shown live by the app: output of a running command, and edits that needed no approval.
+        session.workspace.on_output = lambda line: events.put(("output", {"line": line[:2000]}))
+        session.workspace.on_auto = lambda action: events.put(("auto", action))
+        yield "session", {"id": session.id, "cwd": str(session.workspace.root)}
 
         def work():
             try:
@@ -705,6 +722,31 @@ class Engine:
     def forget_chat(self, chat_id: str) -> None:
         with self._sessions_lock:
             self._sessions.pop(chat_id, None)
+
+    # ----- saved sessions (the SQLite database the terminal app writes too) -----
+    def saved_sessions(self, limit: int = 100) -> list[dict]:
+        db = self.history_db()
+        return db.list_sessions(limit) if db is not None else []
+
+    def saved_session(self, session_id: str) -> dict | None:
+        """One saved conversation with its turns, ready for the app to draw."""
+        from vesper.coder import transcript
+
+        db = self.history_db()
+        row = db.get_session(session_id) if db is not None else None
+        if row is None:
+            return None
+        return {**row, "turns": transcript(db.load_messages(row["id"]))}
+
+    def delete_saved_session(self, session_id: str) -> None:
+        db = self.history_db()
+        if db is None:
+            return
+        with self._sessions_lock:
+            for chat_id, entry in list(self._sessions.items()):
+                if entry["session"].id == session_id:
+                    del self._sessions[chat_id]
+        db.delete_session(session_id)
 
     # ----- view -----
     def state(self) -> dict:
@@ -800,9 +842,12 @@ def create_app(token: str, engine: Engine | None = None, allowed_hosts=None) -> 
         history = body.get("history") or []
         if not isinstance(history, list):
             raise HTTPException(400, "history must be a list.")
+        session_id = body.get("session_id")
+        if session_id is not None and not (isinstance(session_id, str) and SESSION_ID.match(session_id)):
+            raise HTTPException(400, "session_id is not a session id.")
 
         def events():
-            for event, data in engine.stream_answer(question, chat_id, history):
+            for event, data in engine.stream_answer(question, chat_id, history, session_id):
                 yield f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
         return StreamingResponse(events(), media_type="text/event-stream",
@@ -817,6 +862,23 @@ def create_app(token: str, engine: Engine | None = None, allowed_hosts=None) -> 
             raise HTTPException(400, "Send an id and an answer: yes, always or no.")
         if not engine.answer_approval(aid, answer):
             raise HTTPException(404, "That request is no longer waiting.")
+        return {"ok": True}
+
+    @app.get("/api/sessions", dependencies=[Depends(auth)])
+    def sessions(limit: int = 100):
+        return {"sessions": engine.saved_sessions(max(1, min(int(limit), 500)))}
+
+    @app.get("/api/sessions/{session_id}", dependencies=[Depends(auth)])
+    def session(session_id: str):
+        found = engine.saved_session(session_id) if SESSION_ID.match(session_id) else None
+        if found is None:
+            raise HTTPException(404, "That conversation is not in the history.")
+        return found
+
+    @app.delete("/api/sessions/{session_id}", dependencies=[Depends(auth)])
+    def delete_session(session_id: str):
+        if SESSION_ID.match(session_id):
+            engine.delete_saved_session(session_id)
         return {"ok": True}
 
     @app.delete("/api/chats/{chat_id}", dependencies=[Depends(auth)])

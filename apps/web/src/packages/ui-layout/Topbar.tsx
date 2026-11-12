@@ -1,4 +1,6 @@
-import { currentChat, folderName, openSettings, pickFolder, refresh, saveSettings, toggleSidebar, useStore } from '../store/store'
+import {
+  currentChat, folderName, openSettings, pickFolder, refresh, saveSettings, toggleSidebar, toggleTranscript, useStore,
+} from '../store/store'
 import { Icon } from '../ui-primitives/Icon'
 
 function Status() {
@@ -29,6 +31,8 @@ export function Topbar() {
   const mode = useStore(s => s.server?.settings.mode)
   const workspace = useStore(s => s.server?.settings.workspace ?? '')
   const sidebar = useStore(s => s.sidebar)
+  const transcript = useStore(s => s.transcript)
+  const mac = /Mac/.test(navigator.userAgent)
   return (
     <header className="topbar drag">
       <button type="button" className={`icon-btn sidebar-toggle${sidebar ? '' : ' closed'}`} onClick={toggleSidebar} aria-label={sidebar ? 'Hide sidebar' : 'Show sidebar'} aria-expanded={sidebar}>
@@ -36,6 +40,10 @@ export function Topbar() {
       </button>
       <div className="top-title" title={title}>{title}</div>
       <div className="top-right">
+        <button type="button" className={`status view${transcript ? ' ok' : ''}`} onClick={toggleTranscript} aria-pressed={transcript}
+          title={`Transcript view: show thinking, commands, edits and output in full (${mac ? '⌘' : 'Ctrl+'}O)`}>
+          <Icon name={transcript ? 'eye' : 'eyeOff'} size={13} />Transcript
+        </button>
         {mode === 'folder' ? (
           <button type="button" className={`status folder${workspace ? ' ok' : ''}`} onClick={() => void pickFolder()} title={workspace || 'Open a folder'}>
             <Icon name="folder" size={13} />{workspace ? folderName(workspace) : 'Open folder'}

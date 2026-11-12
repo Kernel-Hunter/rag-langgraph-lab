@@ -1,5 +1,8 @@
 import { useMemo, useState } from 'react'
-import { deleteChat, newChat, openSettings, renameChat, selectChat, useStore, type Chat } from '../store/store'
+import type { SavedSession } from '../connection/api'
+import {
+  deleteChat, deleteSession, folderName, newChat, openSession, openSettings, renameChat, selectChat, useStore, type Chat,
+} from '../store/store'
 import { Icon } from '../ui-primitives/Icon'
 import { Wordmark } from '../ui-primitives/Logo'
 
@@ -52,8 +55,33 @@ function ChatRow({ chat, active, busy }: { chat: Chat; active: boolean; busy: bo
   )
 }
 
+/** A conversation from the session database that is not open here yet (often one from the terminal). */
+function SessionRow({ session, busy }: { session: SavedSession; busy: boolean }) {
+  const [confirm, setConfirm] = useState(false)
+  const where = `${session.source === 'desktop' ? 'app' : 'terminal'} · ${folderName(session.cwd)}`
+  return (
+    <div className="chat-row saved" onMouseLeave={() => setConfirm(false)}>
+      <button type="button" className="chat-title" onClick={() => void openSession(session.id)} disabled={busy}
+        title={`${session.title || 'Untitled'}\n${session.cwd}`}>
+        <span className="saved-title">{session.title || 'Untitled'}</span>
+        <span className="saved-where">{where}</span>
+      </button>
+      <div className="chat-tools">
+        {confirm ? (
+          <button type="button" className="icon-btn sm danger-on" onClick={() => void deleteSession(session.id)} aria-label="Confirm delete" title="Click again to delete">
+            <Icon name="check" size={14} />
+          </button>
+        ) : (
+          <button type="button" className="icon-btn sm" onClick={() => setConfirm(true)} aria-label="Delete conversation"><Icon name="trash" size={14} /></button>
+        )}
+      </div>
+    </div>
+  )
+}
+
 export function Sidebar() {
   const chats = useStore(s => s.chats)
+  const history = useStore(s => s.history)
   const currentId = useStore(s => s.currentId)
   const busy = useStore(s => s.streamingId !== null)
   const docs = useStore(s => s.server?.docs.length ?? 0)
@@ -69,6 +97,10 @@ export function Sidebar() {
     }
     return [...out.entries()]
   }, [chats, query])
+  const saved = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    return q ? history.filter(h => h.title.toLowerCase().includes(q) || h.cwd.toLowerCase().includes(q)) : history
+  }, [history, query])
 
   return (
     <aside className="sidebar">
@@ -90,8 +122,16 @@ export function Sidebar() {
             {list.map(c => <ChatRow key={c.id} chat={c} active={c.id === currentId} busy={busy} />)}
           </div>
         ))}
-        {!chats.length && <p className="side-empty">Your chats show up here.</p>}
-        {!!chats.length && !groups.length && <p className="side-empty">No chats match.</p>}
+        {!!saved.length && (
+          <div className="chat-group">
+            <div className="group-label" title="Conversations saved by the terminal app or an earlier install. Click one to continue it here.">
+              Session history
+            </div>
+            {saved.map(h => <SessionRow key={h.id} session={h} busy={busy} />)}
+          </div>
+        )}
+        {!chats.length && !saved.length && <p className="side-empty">Your chats show up here.</p>}
+        {(!!chats.length || !!history.length) && !groups.length && !saved.length && <p className="side-empty">No chats match.</p>}
       </nav>
       <div className="side-bottom">
         <button type="button" className="side-link" onClick={() => openSettings('documents')}>

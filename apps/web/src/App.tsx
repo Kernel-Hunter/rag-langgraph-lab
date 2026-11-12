@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
-import { closeSettings, getState, newChat, openSettings, refresh, stop, toast, toggleSidebar, uploadFiles, useStore } from './packages/store/store'
+import {
+  closeSettings, getState, newChat, openSettings, refresh, stop, toast, toggleSidebar, toggleTranscript, uploadFiles, useStore,
+} from './packages/store/store'
 import { Effects } from './packages/ui-effects/Effects'
 import { Composer } from './packages/ui-input/Composer'
 import { Sidebar } from './packages/ui-layout/Sidebar'
@@ -35,6 +37,7 @@ export function App() {
       if (mod && !e.shiftKey && e.key.toLowerCase() === 'n') { e.preventDefault(); newChat(); window.dispatchEvent(new Event('vesper:focus-composer')) }
       else if (mod && e.key === ',') { e.preventDefault(); if (getState().settings.open) closeSettings(); else openSettings() }
       else if (mod && e.key.toLowerCase() === 'b') { e.preventDefault(); toggleSidebar() }
+      else if (mod && !e.shiftKey && e.key.toLowerCase() === 'o') { e.preventDefault(); toggleTranscript() }
       else if (mod && e.key === 'k') { e.preventDefault(); (document.querySelector('.side-search input') as HTMLInputElement | null)?.focus() }
       else if (e.key === 'Escape' && getState().streamingId && !getState().settings.open) stop()
     }

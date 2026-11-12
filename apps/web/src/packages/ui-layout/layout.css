@@ -88,3 +88,10 @@ button.status:hover { background: var(--layer-1); color: var(--text); }
 .status.folder { max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
 .status.folder svg { flex: none; }
 .status.folder.ok { color: var(--text); }
+
+/* saved sessions in the sidebar, transcript toggle */
+.chat-row.saved .chat-title { display: flex; flex-direction: column; gap: 1px; height: auto; padding-top: 6px; padding-bottom: 6px; }
+.saved-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.saved-where { font-size: 11px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.status.view { cursor: pointer; }
+.status.view.ok { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }

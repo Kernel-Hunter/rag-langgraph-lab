@@ -6,6 +6,8 @@ terminal UI (`tui.py`) and the desktop app (`server.py`).
 
 Events from `Session.ask()`:
     ("token", {"text"})                              streamed answer text
+    ("reasoning", {"text"})                          streamed thinking, for models that show it
+    ("tool_draft", {"name", "chars"})                the model is writing a tool call (its arguments so far)
     ("tool_start", {"id", "name", "args"})           the model called a tool
     ("tool_end", {"id", "name", "output", "ok", "ms"})
     ("sources", {"query", "items"})                  document passages found by search_docs
@@ -49,6 +51,108 @@ def text_of(content) -> str:
         return "".join(b.get("text", "") if isinstance(b, dict) and b.get("type", "text") == "text" else ""
                        for b in content)
     return str(content or "")
+
+
+def reasoning_of(msg: BaseMessage) -> str:
+    """The thinking a model sent next to its answer, whatever shape the provider gives it."""
+    out = []
+    if isinstance(msg.content, list):
+        for block in msg.content:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "thinking":                      # Anthropic
+                out.append(str(block.get("thinking") or ""))
+            elif block.get("type") in ("reasoning", "reasoning_content"):
+                value = block.get("reasoning") or block.get("reasoning_content") or block.get("text") or ""
+                if not value and isinstance(block.get("summary"), list):  # OpenAI reasoning summaries
+                    value = "".join(str(part.get("text", "")) for part in block["summary"] if isinstance(part, dict))
+                out.append(value if isinstance(value, str) else str(value.get("text", "")) if isinstance(value, dict) else "")
+    extra = (msg.additional_kwargs or {}).get("reasoning_content")  # Ollama, DeepSeek
+    if isinstance(extra, str):
+        out.append(extra)
+    return "".join(out)
+
+
+class ThinkSplitter:
+    """Separates `<think>...</think>` from the answer in a stream of text pieces.
+
+    Local reasoning models write their thinking inline between these tags. A tag can be cut
+    in two by the stream, so a possible half tag at the end of a piece is held back.
+    """
+
+    OPEN, CLOSE = "<think>", "</think>"
+
+    def __init__(self) -> None:
+        self.inside = False
+        self.held = ""
+
+    def feed(self, text: str) -> list[tuple[str, str]]:
+        """[("reasoning" | "token", text), ...] for one more piece of the stream."""
+        out: list[tuple[str, str]] = []
+        buf, self.held = self.held + text, ""
+        while buf:
+            kind = "reasoning" if self.inside else "token"
+            tag = self.CLOSE if self.inside else self.OPEN
+            at = buf.find(tag)
+            if at >= 0:
+                if buf[:at]:
+                    out.append((kind, buf[:at]))
+                buf = buf[at + len(tag):]
+                self.inside = not self.inside
+                continue
+            keep = next((n for n in range(min(len(tag) - 1, len(buf)), 0, -1) if tag.startswith(buf[-n:])), 0)
+            if buf[:len(buf) - keep]:
+                out.append((kind, buf[:len(buf) - keep]))
+            self.held = buf[len(buf) - keep:]
+            break
+        return out
+
+    def flush(self) -> list[tuple[str, str]]:
+        held, self.held = self.held, ""
+        return [("reasoning" if self.inside else "token", held)] if held else []
+
+
+def split_thinking(text: str) -> tuple[str, str]:
+    """(thinking, answer) of a finished message that may hold `<think>` blocks."""
+    splitter = ThinkSplitter()
+    parts = splitter.feed(text) + splitter.flush()
+    return ("".join(t for k, t in parts if k == "reasoning").strip(),
+            "".join(t for k, t in parts if k == "token").strip())
+
+
+def transcript(messages: list[BaseMessage]) -> list[dict]:
+    """A saved conversation as turns the front ends can draw.
+
+    [{"role": "user", "text"}, {"role": "assistant", "parts": [...]}] where a part is
+    {"type": "reasoning" | "text", "text"} or {"type": "tool", "id", "name", "args", "output", "ok"}.
+    """
+    turns: list[dict] = []
+    tools: dict[str, dict] = {}
+    for m in messages:
+        if isinstance(m, HumanMessage):
+            turns.append({"role": "user", "text": text_of(m.content).split("\n\n<file path=")[0].strip()})
+            continue
+        if not turns or turns[-1]["role"] != "assistant":
+            turns.append({"role": "assistant", "parts": []})
+        parts = turns[-1]["parts"]
+        if isinstance(m, AIMessage):
+            inline, answer = split_thinking(text_of(m.content))
+            thought = (reasoning_of(m) + ("\n" if reasoning_of(m) and inline else "") + inline).strip()
+            if thought:
+                parts.append({"type": "reasoning", "text": thought})
+            if answer:
+                parts.append({"type": "text", "text": answer})
+            for call in m.tool_calls or []:
+                part = {"type": "tool", "id": call.get("id") or "", "name": call["name"],
+                        "args": call.get("args", {}), "output": None, "ok": None}
+                tools[part["id"]] = part
+                parts.append(part)
+        elif isinstance(m, ToolMessage):
+            part = tools.get(m.tool_call_id or "")
+            if part is not None:
+                out = text_of(m.content)
+                part["output"], part["ok"] = out, m.status != "error" and not out.startswith("Error:")
+    return turns
 
 
 def build_coder(llm, workspace: Workspace):
@@ -204,6 +308,8 @@ class Session:
         tool_started: dict[str, float] = {}
         waited_before = self.workspace.waited
         tools = 0
+        splitter = ThinkSplitter()
+        drafts: dict[int, dict] = {}  # tool calls the model is still writing, by position
         try:
             for mode, chunk in self._agent_for_cwd().stream(
                 {"messages": messages},
@@ -214,16 +320,35 @@ class Session:
                 if mode == "messages":
                     msg, meta = chunk
                     if meta.get("langgraph_node") == "model" and isinstance(msg, AIMessageChunk):
+                        thought = reasoning_of(msg)
+                        if thought:
+                            streamed_ids.add(msg.id or "")
+                            yield "reasoning", {"text": thought}
                         piece = text_of(msg.content)
                         if piece:
                             streamed_ids.add(msg.id or "")
-                            yield "token", {"text": piece}
+                            for kind, part in splitter.feed(piece):
+                                yield kind, {"text": part}
+                        for part in msg.tool_call_chunks or []:
+                            draft = drafts.setdefault(part.get("index") or 0, {"name": "", "chars": 0, "told": -1})
+                            draft["name"] = part.get("name") or draft["name"]
+                            draft["chars"] += len(part.get("args") or "")
+                            if draft["name"] and draft["chars"] - draft["told"] >= 120:
+                                draft["told"] = draft["chars"]
+                                yield "tool_draft", {"name": draft["name"], "chars": draft["chars"]}
                 elif mode == "updates":
                     for node, update in (chunk or {}).items():
                         for m in (update.get("messages", []) if isinstance(update, dict) else []):
                             if isinstance(m, AIMessage):
-                                if (m.id or "") not in streamed_ids and text_of(m.content):
-                                    yield "token", {"text": text_of(m.content)}  # a model that does not stream
+                                yield from ((kind, {"text": part}) for kind, part in splitter.flush())
+                                drafts.clear()
+                                if (m.id or "") not in streamed_ids:  # a model that does not stream
+                                    thought, answer = split_thinking(text_of(m.content))
+                                    thought = reasoning_of(m) + thought
+                                    if thought:
+                                        yield "reasoning", {"text": thought}
+                                    if answer:
+                                        yield "token", {"text": answer}
                                 for call in m.tool_calls or []:
                                     tools += 1
                                     # Time spent waiting for the user's approval is not the tool's time.

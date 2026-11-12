@@ -184,7 +184,8 @@ def _fake_chat_model():
                 return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
             last = messages[-1] if messages else None
             if not isinstance(last, ToolMessage):
-                msg = AIMessage(content="Let me look at the folder first.",
+                msg = AIMessage(content="<think>The user wants something done in this folder. "
+                                        "I will list it, then write a short note.</think>Let me look at the folder first.",
                                 tool_calls=[{"name": "list_files", "args": {"path": "."}, "id": "fake-list"}])
             elif last.name == "list_files":
                 msg = AIMessage(content="", tool_calls=[{"name": "write_file", "id": "fake-write", "args": {

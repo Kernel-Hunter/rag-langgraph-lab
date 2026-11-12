@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import queue
 import re
 import signal
@@ -67,6 +68,7 @@ from vesper.ui import (
     model_label,
     note,
     print_events,
+    print_transcript,
     recap,
     sessions_table,
     short_path,
@@ -88,7 +90,8 @@ SLASH = {
     "/resume": "go back to an earlier conversation",
     "/sessions": "list saved conversations",
     "/logs": "what the agent did in this conversation (/logs full for details)",
-    "/verbose": "show full tool output while working (ctrl+o)",
+    "/verbose": "transcript view: show thinking and full tool output while working (ctrl+o)",
+    "/transcript": "print this whole conversation in detail: thinking, commands, edits, output",
     "/status": "model, folder, session and token use",
     "/model": "switch provider and model",
     "/key": "set the API key for the current provider",
@@ -102,13 +105,14 @@ SHORTCUTS = [
     ("@path", "attach a file to your message"),
     ("!command", "run a shell command yourself (!cd folder moves Vesper too)"),
     ("shift+tab", "cycle mode: ask → auto-edit → yolo"),
-    ("ctrl+o", "show or hide full tool output"),
+    ("ctrl+o", "transcript view on or off (thinking and full tool output)"),
     ("esc then enter", "new line"),
     ("ctrl+c", "stop the answer · twice to quit"),
     ("↑ ↓", "previous messages"),
 ]
 MAX_MENTION_CHARS = 60_000
 MAX_PIPED_CHARS = 200_000  # text piped into one-shot mode
+STDIN_WAIT_S = 2.0         # how long one-shot mode waits for piped text when it already has a question
 MENTION = re.compile(r"(?<![\w/])@([\w./~\-]+)")
 
 
@@ -270,6 +274,7 @@ class App:
         except KeyboardInterrupt:
             stop.set()
             self.workspace.cancel()
+            r.end_thought(self.verbose)
             r.flush()
             note("⎿  Stopped. Tell Vesper what to do instead.", WARN)
         finally:
@@ -277,11 +282,22 @@ class App:
 
     def draw(self, event: str, data: dict) -> None:
         r = self.renderer
+        if event not in ("reasoning", "output"):
+            r.end_thought(self.verbose)
         if event == "token":
             r.token(data["text"])
+        elif event == "reasoning":
+            r.flush()
+            r.thought(data["text"])
+        elif event == "tool_draft":  # the model is still writing the call: say which one, and how far
+            r.flush()
+            label = TOOL_LABELS.get(data["name"], data["name"])
+            r.progress(f"Preparing {label} ({fmt_tokens(data['chars'])} characters)")
         elif event == "tool_start":
             r.flush()
             console.print(tool_start_line(data["name"], data["args"]))
+            if self.verbose and data["name"] == "run_command":
+                console.print(Text("     $ " + str(data["args"].get("command", "")), style=MUTED))
             r.restart(TOOL_LABELS.get(data["name"], data["name"]))
         elif event == "tool_end":
             r.stop()
@@ -411,7 +427,7 @@ class App:
             folder = tail_path(app.root, 34)
             used = app.session.tokens["context"] if app.session else 0
             ctx = f"  ·  context {min(100, round(100 * used / app.session.context_tokens))}%" if used else ""
-            loud = "  ·  <style fg='ansicyan'>verbose</style>" if app.verbose else ""
+            loud = "  ·  <style fg='ansicyan'>transcript</style>" if app.verbose else ""
             return HTML(f" <b>{esc(folder)}</b>  ·  {esc(model_label(app.cfg))}  ·  "
                         f"<style fg='{color}'><b>{app.mode}</b></style> <style fg='ansigray'>(shift+tab)</style>"
                         f"{ctx}{loud}  ·  <style fg='ansigray'>/help</style>")
@@ -441,7 +457,8 @@ class App:
         self.verbose = on
         self._remember({"verbose": on})
         if not quiet:
-            note("verbose on: full tool output is shown." if on else "verbose off: tool output is summarized.")
+            note("transcript view on: thinking and full tool output are shown." if on
+                 else "transcript view off: thinking and tool output are summarized.")
 
     @staticmethod
     def _remember(patch: dict) -> None:
@@ -588,6 +605,13 @@ class App:
             self.show_logs(arg)
         elif cmd == "/verbose":
             self.set_verbose(not self.verbose)
+        elif cmd == "/transcript":
+            from vesper.coder import transcript
+
+            if self.session.history:
+                print_transcript(transcript(self.session.history))
+            else:
+                note("Nothing has happened in this conversation yet.")
         elif cmd == "/status":
             self.show_status()
         elif cmd == "/mode":
@@ -767,6 +791,27 @@ def logs_command(argv: list[str]) -> int:
 
 
 # ---------------------------------------------------------------- entry point
+def read_piped(have_question: bool) -> str:
+    """Text piped into `vesper "question"`, or "" when nothing is piped.
+
+    A program that starts vesper with an open but silent stdin (a script, a CI step, another
+    agent) would make a plain read() wait forever. So when the question is already on the
+    command line, wait only STDIN_WAIT_S seconds for the first byte.
+    """
+    if sys.stdin is None or sys.stdin.isatty():
+        return ""
+    if have_question and os.name == "posix":
+        import select
+
+        try:
+            ready, _, _ = select.select([sys.stdin], [], [], STDIN_WAIT_S)
+        except (OSError, ValueError):  # stdin is not a real file (a test, an embedded interpreter)
+            ready = [sys.stdin]
+        if not ready:
+            return ""
+    return sys.stdin.read(MAX_PIPED_CHARS + 1).strip()
+
+
 def pick_resume(store, ref: str | None, here: Path, interactive: bool) -> dict | None:
     """The session for `-c` (ref is None: the latest one in this folder) or `-r [ID]`."""
     if store is None:
@@ -834,7 +879,7 @@ def main(argv: list[str] | None = None) -> int:
         cfg.update(provider=pid, model=model)
     mode = args.mode or (cfg.get("agent_mode") if cfg.get("agent_mode") in MODES else "ask")
 
-    piped = "" if sys.stdin is None or sys.stdin.isatty() else sys.stdin.read(MAX_PIPED_CHARS + 1).strip()
+    piped = read_piped(bool(args.prompt))
     if len(piped) > MAX_PIPED_CHARS:
         piped = piped[:MAX_PIPED_CHARS] + "\n[... input cut off]"
     one_shot = bool(args.prompt or piped)

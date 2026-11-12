@@ -1,8 +1,10 @@
 import { useSyncExternalStore } from 'react'
 import {
-  api, ApiError, type ApprovalAnswer, type ApprovalRequest, type ChatTurn, type ServerState, type Source, type StreamEvent,
+  api, ApiError, type ApprovalAnswer, type ApprovalRequest, type ChatTurn, type SavedSession, type ServerState, type Source,
+  type StreamEvent, type Usage,
 } from '../connection/api'
 import { applyAppearance, loadAppearance, saveAppearance, type Appearance } from '../ui-theme/appearance'
+import { blankMsg, MAX_TOOL_OUTPUT, turnsToMessages, uid } from './history'
 
 /** One tool call the folder agent made, drawn inline at text offset `at`. */
 export interface ToolStep {
@@ -10,9 +12,23 @@ export interface ToolStep {
   name: string
   args: Record<string, unknown>
   at: number
+  /** Order among the tool calls and thoughts of one answer (several can share one text offset). */
+  n: number
   output?: string
   ok?: boolean
+  ms?: number
+  /** The change an edit made, when it ran without an approval card. */
+  diff?: string
+  /** Output of a command that is still running. Not saved. */
+  live?: string
   approval?: ApprovalRequest & { answer?: ApprovalAnswer; sending?: boolean }
+}
+
+/** A stretch of the model's thinking, drawn inline at text offset `at`. */
+export interface Thought {
+  at: number
+  n: number
+  text: string
 }
 
 export interface Msg {
@@ -24,6 +40,10 @@ export interface Msg {
   supported: boolean | null
   error: string | null
   tools: ToolStep[]
+  thoughts: Thought[]
+  usage?: Usage
+  /** The tool call the model is writing right now ("Edit, 340 characters"). Not saved. */
+  draft?: { name: string; chars: number }
   streaming?: boolean
 }
 
@@ -32,6 +52,8 @@ export interface Chat {
   title: string
   updated: number
   messages: Msg[]
+  /** Its row in the session database, once the engine has answered in Folder mode. */
+  sessionId?: string
 }
 
 export type SettingsTab = 'folder' | 'models' | 'documents' | 'retrieval' | 'appearance'
@@ -52,18 +74,15 @@ export interface State {
   settings: { open: boolean; tab: SettingsTab; focusProvider: string | null }
   sidebar: boolean
   toasts: Toast[]
+  /** Saved conversations that are not open as a chat here (started in the terminal, or before a reset). */
+  history: SavedSession[]
+  /** Transcript view: thinking, commands, edits and output are shown in full. */
+  transcript: boolean
 }
 
 const CHATS_KEY = 'vesper.chats'
 const MAX_CHATS = 200
 
-// Also the engine's chat id, so only letters, digits and dashes.
-const uid = (): string =>
-  typeof crypto !== 'undefined' && 'randomUUID' in crypto
-    ? crypto.randomUUID()
-    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
-
-const MAX_TOOL_OUTPUT = 4000 // kept per tool call in saved chats
 
 function loadTools(raw: unknown): ToolStep[] {
   if (!Array.isArray(raw)) return []
@@ -74,8 +93,11 @@ function loadTools(raw: unknown): ToolStep[] {
       name: t.name,
       args: t.args && typeof t.args === 'object' ? t.args : {},
       at: Number(t.at) || 0,
+      n: Number(t.n) || 0,
       output: typeof t.output === 'string' ? t.output : undefined,
       ok: typeof t.ok === 'boolean' ? t.ok : undefined,
+      ms: typeof t.ms === 'number' ? t.ms : undefined,
+      diff: typeof t.diff === 'string' ? t.diff : undefined,
       // A saved approval can never be answered again: the engine has moved on.
       approval: t.approval ? { ...t.approval, answer: t.approval.answer ?? 'no', sending: false } : undefined,
     }]
@@ -94,6 +116,7 @@ function loadChats(): Chat[] {
         id: c.id,
         title: String(c.title ?? 'New chat').slice(0, 80),
         updated: Number(c.updated) || Date.now(),
+        sessionId: typeof c.sessionId === 'string' ? c.sessionId : undefined,
         messages: c.messages.map((m: Partial<Msg>) => ({
           id: typeof m.id === 'string' ? m.id : uid(),
           role: m.role === 'user' ? 'user' : 'bot',
@@ -103,6 +126,10 @@ function loadChats(): Chat[] {
           supported: typeof m.supported === 'boolean' ? m.supported : null,
           error: typeof m.error === 'string' ? m.error : null,
           tools: loadTools(m.tools),
+          thoughts: Array.isArray(m.thoughts)
+            ? m.thoughts.filter(t => t && typeof t.text === 'string').map(t => ({ at: Number(t.at) || 0, n: Number(t.n) || 0, text: t.text }))
+            : [],
+          usage: m.usage && typeof m.usage === 'object' ? m.usage : undefined,
         })),
       }]
     }).slice(0, MAX_CHATS)
@@ -121,6 +148,8 @@ let state: State = {
   settings: { open: false, tab: 'models', focusProvider: null },
   sidebar: true,
   toasts: [],
+  history: [],
+  transcript: (() => { try { return localStorage.getItem('vesper.transcript') === '1' } catch { return false } })(),
 }
 state.currentId = state.chats[0]?.id ?? null
 
@@ -143,9 +172,9 @@ function persistChats(): void {
     try {
       const clean = state.chats.map(c => ({
         ...c,
-        messages: c.messages.map(({ streaming: _s, ...m }) => ({
+        messages: c.messages.map(({ streaming: _s, draft: _d, ...m }) => ({
           ...m,
-          tools: m.tools.map(t => ({ ...t, output: t.output?.slice(0, MAX_TOOL_OUTPUT) })),
+          tools: m.tools.map(({ live: _l, ...t }) => ({ ...t, output: t.output?.slice(0, MAX_TOOL_OUTPUT) })),
         })),
       }))
       localStorage.setItem(CHATS_KEY, JSON.stringify(clean))
@@ -175,7 +204,9 @@ export async function refresh(): Promise<void> {
       toast(server.index.error, 'error')
     }
     lastIndexError = server.index.error
+    const first = !state.server
     set({ server, connected: true })
+    if (first) void loadHistory()
   } catch (e) {
     set({ connected: false })
     if (e instanceof ApiError && e.status === 401) {
@@ -187,7 +218,7 @@ export async function refresh(): Promise<void> {
   const busy = !s || !state.connected || ['idle', 'loading', 'embedding'].includes(s.index.status)
   if (!document.hidden || busy) pollTimer = setTimeout(() => void refresh(), busy ? 800 : 8000)
 }
-document.addEventListener('visibilitychange', () => { if (!document.hidden) void refresh() })
+document.addEventListener('visibilitychange', () => { if (!document.hidden) { void refresh(); void loadHistory() } })
 
 export async function saveSettings(values: Record<string, unknown>, okText?: string): Promise<boolean> {
   try {
@@ -230,6 +261,11 @@ export function openSettings(tab: SettingsTab = 'models', focusProvider: string 
 export const closeSettings = (): void => set(s => ({ settings: { ...s.settings, open: false } }))
 export const setSettingsTab = (tab: SettingsTab): void => set(s => ({ settings: { ...s.settings, tab, focusProvider: null } }))
 export const toggleSidebar = (): void => set(s => ({ sidebar: !s.sidebar }))
+export function toggleTranscript(): void {
+  set(s => ({ transcript: !s.transcript }))
+  try { localStorage.setItem('vesper.transcript', state.transcript ? '1' : '0') } catch { /* private mode */ }
+  toast(state.transcript ? 'Transcript view: thinking, commands and output in full' : 'Transcript view off')
+}
 
 export function setAppearance(patch: Partial<Appearance>): void {
   const appearance = { ...state.appearance, ...patch }
@@ -256,6 +292,8 @@ export function selectChat(id: string): void {
 export function deleteChat(id: string): void {
   if (state.streamingId === id) abort?.abort()
   api.forgetChat(id).catch(() => undefined) // the engine drops its copy of the conversation
+  const saved = state.chats.find(c => c.id === id)?.sessionId
+  if (saved) api.deleteSession(saved).catch(() => undefined) // and its row in the session database
   set(s => {
     const chats = s.chats.filter(c => c.id !== id)
     return { chats, currentId: s.currentId === id ? (chats[0]?.id ?? null) : s.currentId }
@@ -324,8 +362,9 @@ export async function send(text: string): Promise<void> {
   const history: ChatTurn[] = (state.chats.find(c => c.id === chatId)?.messages ?? [])
     .filter(m => m.text && !m.error)
     .map(m => ({ role: m.role, text: m.text }))
-  const user: Msg = { id: uid(), role: 'user', text: question, sources: [], searches: [], supported: null, error: null, tools: [] }
-  const bot: Msg = { id: uid(), role: 'bot', text: '', sources: [], searches: [], supported: null, error: null, tools: [], streaming: true }
+  const user: Msg = { ...blankMsg('user'), text: question }
+  const bot: Msg = { ...blankMsg('bot'), streaming: true }
+  const sessionId = state.chats.find(c => c.id === chatId)?.sessionId
   const cid = chatId
   set(st => ({
     streamingId: cid,
@@ -355,17 +394,53 @@ export async function send(text: string): Promise<void> {
         tools[i] = { ...tools[i]!, ...patch(tools[i]!) }
         return { tools }
       })
-    await api.chat({ question, chat_id: cid, history }, (e: StreamEvent) => {
+    let thinking = false // the last thing that arrived was thinking: more of it joins the same block
+    await api.chat({ question, chat_id: cid, history, session_id: sessionId }, (e: StreamEvent) => {
+      if (e.event !== 'reasoning' && e.event !== 'output') thinking = false
       switch (e.event) {
+        case 'session':
+          set(st => ({
+            chats: st.chats.map(c => (c.id === cid ? { ...c, sessionId: e.data.id } : c)),
+            history: st.history.filter(h => h.id !== e.data.id),
+          }))
+          break
+        case 'reasoning': {
+          flush()
+          const more = thinking
+          thinking = true
+          patchMessage(cid, bot.id, m => {
+            const last = m.thoughts[m.thoughts.length - 1]
+            if (more && last) return { thoughts: [...m.thoughts.slice(0, -1), { ...last, text: last.text + e.data.text }] }
+            return { thoughts: [...m.thoughts, { at: m.text.length, n: m.tools.length + m.thoughts.length, text: e.data.text }] }
+          })
+          break
+        }
+        case 'tool_draft':
+          patchMessage(cid, bot.id, () => ({ draft: e.data }))
+          break
         case 'tool_start':
           flush()
           patchMessage(cid, bot.id, m => ({
-            tools: [...m.tools, { id: e.data.id ?? uid(), name: e.data.name, args: e.data.args ?? {}, at: m.text.length }],
+            draft: undefined,
+            tools: [...m.tools, {
+              id: e.data.id ?? uid(), name: e.data.name, args: e.data.args ?? {}, at: m.text.length,
+              n: m.tools.length + m.thoughts.length,
+            }],
           }))
           break
         case 'tool_end':
           patchTool(t => (e.data.id ? t.id === e.data.id : t.name === e.data.name && t.output === undefined),
-            () => ({ output: e.data.output, ok: e.data.ok }))
+            () => ({ output: e.data.output, ok: e.data.ok, ms: e.data.ms ?? undefined, live: undefined }))
+          break
+        case 'output':
+          patchTool(t => t.name === 'run_command' && t.output === undefined,
+            t => ({ live: ((t.live ?? '') + e.data.line + '\n').slice(-MAX_TOOL_OUTPUT) }))
+          break
+        case 'auto':
+          if (e.data.diff) patchTool(t => t.name === e.data.tool && t.output === undefined, () => ({ diff: e.data.diff }))
+          break
+        case 'usage':
+          patchMessage(cid, bot.id, () => ({ usage: e.data }))
           break
         case 'approval':
           patchTool(t => t.name === e.data.tool && t.output === undefined && !t.approval, () => ({ approval: e.data }))
@@ -409,6 +484,7 @@ export async function send(text: string): Promise<void> {
     flush()
     patchMessage(cid, bot.id, m => ({
       streaming: false,
+      draft: undefined,
       text: m.text || (m.error || m.tools.length ? '' : '_Stopped._'),
       // Anything still waiting was refused by the engine when the stream closed.
       tools: m.tools.map(t => (t.approval && !t.approval.answer ? { ...t, approval: { ...t.approval, answer: 'no' as const } } : t)),
@@ -416,7 +492,50 @@ export async function send(text: string): Promise<void> {
     abort = null
     set({ streamingId: null })
     persistChats()
+    void loadHistory()
   }
+}
+
+// ---------------- saved sessions ----------------
+/** Lists the conversations in the session database that are not already open as a chat here. */
+export async function loadHistory(): Promise<void> {
+  try {
+    const open = new Set(state.chats.map(c => c.sessionId).filter(Boolean))
+    set({ history: (await api.sessions()).filter(s => !open.has(s.id)) })
+  } catch { /* the engine is not up yet; refresh() retries */ }
+}
+
+/** Opens a saved conversation as a chat. The next message continues it, in its folder. */
+export async function openSession(id: string): Promise<void> {
+  if (state.streamingId) return
+  const already = state.chats.find(c => c.sessionId === id)
+  if (already) { set({ currentId: already.id }); return }
+  try {
+    const saved = await api.session(id)
+    const chat: Chat = {
+      id: uid(), title: saved.title || 'Untitled', updated: saved.updated_at * 1000,
+      messages: turnsToMessages(saved.turns), sessionId: saved.id,
+    }
+    set(s => ({
+      chats: [chat, ...s.chats].sort((a, b) => b.updated - a.updated).slice(0, MAX_CHATS),
+      currentId: chat.id,
+      history: s.history.filter(h => h.id !== id),
+    }))
+    persistChats()
+    // Continue where it was: Folder mode, in the conversation's folder (if it still exists).
+    const settings = state.server?.settings
+    if (settings && (settings.mode !== 'folder' || settings.workspace !== saved.cwd)) {
+      await api.settings({ mode: 'folder', workspace: saved.cwd }).then(server => set({ server }), () => undefined)
+    }
+  } catch (e) {
+    toast(e instanceof Error ? e.message : String(e), 'error')
+    void loadHistory()
+  }
+}
+
+export async function deleteSession(id: string): Promise<void> {
+  set(s => ({ history: s.history.filter(h => h.id !== id) }))
+  await api.deleteSession(id).catch(e => toast(e instanceof Error ? e.message : String(e), 'error'))
 }
 
 export async function retry(chatId: string, botId: string): Promise<void> {

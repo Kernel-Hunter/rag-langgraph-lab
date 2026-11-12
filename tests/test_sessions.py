@@ -203,7 +203,7 @@ def test_terminal_turn_cd_sessions_logs_and_resume(app, proj, store, capsys):
     app.command("/cd nowhere")
     assert "does not exist" in capsys.readouterr().out and app.root == proj.resolve()
 
-    for cmd in ("/sessions", "/logs", "/logs full", "/status", "/help", "/verbose", "/verbose", "/bogus"):
+    for cmd in ("/sessions", "/logs", "/logs full", "/status", "/help", "/verbose", "/verbose", "/transcript", "/bogus"):
         assert app.command(cmd)
     out = capsys.readouterr().out
     assert "make notes" in out and "vesper-notes.md" in out and "Unknown command /bogus" in out
@@ -294,3 +294,99 @@ def test_engine_folder_follows_the_agent_and_saves_history(server, tmp_path, mon
     engine._sessions["chat-a"]["session"].set_llm(fake(AIMessage("Back.")))
     list(engine.stream_answer("and now?", "chat-a", []))
     assert session.workspace.root == proj.resolve()
+
+
+# ---------------------------------------------------------------- reasoning and the transcript
+def test_think_tags_are_split_from_the_answer_even_across_pieces():
+    from vesper.coder import ThinkSplitter, split_thinking
+
+    s = ThinkSplitter()
+    got = []
+    for piece in ["<thi", "nk>plan the", " work</th", "ink>\nThe answer", " is 4 < 5."]:
+        got += s.feed(piece)
+    got += s.flush()
+    assert "".join(t for k, t in got if k == "reasoning") == "plan the work"
+    assert "".join(t for k, t in got if k == "token") == "\nThe answer is 4 < 5."
+    assert split_thinking("no tags here") == ("", "no tags here")
+    assert split_thinking("<think>unfinished") == ("unfinished", "")
+
+
+def test_reasoning_events_and_transcript(store, proj):
+    from vesper.coder import reasoning_of, transcript
+
+    thinking = AIMessage(content=[{"type": "thinking", "thinking": "Look at the file first."},
+                                  {"type": "text", "text": ""}],
+                         tool_calls=[{"name": "read_file", "args": {"path": "a.txt"}, "id": "c1"}])
+    assert reasoning_of(thinking) == "Look at the file first."
+    assert reasoning_of(AIMessage(content="x", additional_kwargs={"reasoning_content": "hmm"})) == "hmm"
+    s = Session(fake(thinking, AIMessage("<think>It says alpha.</think>The file says alpha.")), Workspace(proj), store)
+    events = list(s.ask("what is in a.txt?"))
+    assert [d["text"] for e, d in events if e == "reasoning"] == ["Look at the file first.", "It says alpha."]
+    assert "".join(d["text"] for e, d in events if e == "token") == "The file says alpha."
+
+    turns = transcript(store.load_messages(s.id))
+    assert turns[0] == {"role": "user", "text": "what is in a.txt?"}
+    kinds = [p["type"] for p in turns[1]["parts"]]
+    assert kinds == ["reasoning", "tool", "reasoning", "text"]
+    tool = turns[1]["parts"][1]
+    assert tool["name"] == "read_file" and tool["ok"] is True and "alpha" in tool["output"]
+    assert turns[1]["parts"][3]["text"] == "The file says alpha."
+
+
+def test_engine_session_history_api(server, make_client, tmp_path, monkeypatch):
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / "a.txt").write_text("alpha\n")
+    engine = server.Engine()
+    engine.update({"mode": "folder", "workspace": str(proj), "agent_mode": "yolo"})
+    llm = fake(call("run_command", command="echo hello"), AIMessage("<think>done</think>It printed hello."),
+               AIMessage("Second answer."))
+    monkeypatch.setattr(engine, "llm", lambda: llm)
+    events = list(engine.stream_answer("say hello", "chat-1", []))
+    kinds = [e for e, _ in events]
+    assert kinds[0] == "session" and "output" in kinds and "reasoning" in kinds and "usage" in kinds
+    sid = events[0][1]["id"]
+    assert ("output", {"line": "hello"}) in events
+
+    client = make_client(engine=engine)
+    rows = client.get("/api/sessions").json()["sessions"]
+    assert rows[0]["id"] == sid and rows[0]["title"] == "say hello" and rows[0]["source"] == "desktop"
+    saved = client.get(f"/api/sessions/{sid}").json()
+    assert saved["turns"][0] == {"role": "user", "text": "say hello"}
+    parts = saved["turns"][1]["parts"]
+    assert [p["type"] for p in parts] == ["tool", "reasoning", "text"] and "hello" in parts[0]["output"]
+    assert client.get("/api/sessions/ffffffff").status_code == 404
+    assert client.get("/api/sessions/..%2F..").status_code in (400, 404)
+
+    # Another chat (or the app after a restart) continues the saved conversation, in its folder.
+    engine.forget_chat("chat-1")
+    engine.update({"workspace": str(tmp_path)})
+    events = list(engine.stream_answer("and again?", "chat-2", [], sid))
+    assert events[0] == ("session", {"id": sid, "cwd": str(proj.resolve())})
+    assert engine.settings["workspace"] == str(proj.resolve())
+    assert len(client.get(f"/api/sessions/{sid}").json()["turns"]) == 4
+    assert client.post("/api/chat", json={"question": "x", "session_id": "../etc"}).status_code == 400
+
+    assert client.delete(f"/api/sessions/{sid}").json() == {"ok": True}
+    assert client.get(f"/api/sessions/{sid}").status_code == 404 and "chat-2" not in engine._sessions
+
+
+def test_one_shot_does_not_wait_forever_on_a_silent_stdin(proj):
+    """A script or CI step can start vesper with a stdin that is open but never written to."""
+    import os
+    import subprocess
+    import sys
+
+    if os.name != "posix":
+        pytest.skip("select() on pipes is POSIX only")
+    read_end, write_end = os.pipe()  # the write end stays open: no data, no EOF
+    try:
+        done = subprocess.run(
+            [sys.executable, "-m", "vesper.tui", "-C", str(proj), "--mode", "ask", "hello there"],
+            stdin=read_end, capture_output=True, text=True, timeout=60,
+            env={**os.environ, "VESPER_FAKE_LLM": "1"},
+        )
+    finally:
+        os.close(read_end)
+        os.close(write_end)
+    assert done.returncode == 0 and "Let me look at the folder first." in done.stdout

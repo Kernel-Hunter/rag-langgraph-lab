@@ -23,7 +23,7 @@ function FolderEmpty({ workspace, terminal }: { workspace: string; terminal: boo
     <div className="empty">
       <LogoMark size={56} className="empty-logo" />
       {terminal ? (
-        <pre className="boot" aria-label="Vesper ready">{`VESPER v0.4 :: folder agent
+        <pre className="boot" aria-label="Vesper ready">{`VESPER :: coding agent
 > cwd ................ ${workspace || '(none)'}
 > tools .............. read, search, edit, run
 > type a task and press ENTER`}</pre>
@@ -64,7 +64,7 @@ function Empty() {
     <div className="empty">
       <LogoMark size={56} className="empty-logo" />
       {theme === 'terminal' ? (
-        <pre className="boot" aria-label="Vesper ready">{`VESPER v0.4 :: docs shell
+        <pre className="boot" aria-label="Vesper ready">{`VESPER :: docs shell
 > docs loaded ........ ${docs}
 > chunks indexed ..... ${idx?.chunks ?? 0}
 > status ............. ${(idx?.status ?? 'connecting').toUpperCase()}

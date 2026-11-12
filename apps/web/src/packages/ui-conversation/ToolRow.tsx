@@ -15,6 +15,8 @@ const TOOLS: Record<string, { verb: string; icon: IconName; arg: string }> = {
   run_command: { verb: 'Run', icon: 'terminal', arg: 'command' },
 }
 
+export const TOOL_VERBS: Record<string, string> = Object.fromEntries(Object.entries(TOOLS).map(([name, t]) => [name, t.verb]))
+
 const short = (text: string, max: number): string => (text.length > max ? `${text.slice(0, max - 1)}…` : text)
 
 /** One line under the tool name: what came back, in a few words. */
@@ -44,6 +46,21 @@ function Diff({ text }: { text: string }) {
       })}
     </pre>
   )
+}
+
+/** The change an edit asked for, when no diff came with it (a conversation loaded from history). */
+function argsDiff(step: ToolStep): string {
+  const lines = (value: unknown, sign: string): string[] => (typeof value === 'string' && value ? value.split('\n').map(l => sign + l) : [])
+  if (step.name === 'edit_file') return [...lines(step.args.old_string, '-'), ...lines(step.args.new_string, '+')].join('\n')
+  if (step.name === 'write_file') return lines(step.args.content, '+').slice(0, 400).join('\n')
+  return ''
+}
+
+/** What the call was asked to do, in full: the command line, or the edit as a diff. */
+function Detail({ step }: { step: ToolStep }) {
+  if (step.name === 'run_command') return <pre className="diff cmd">$ {String(step.args.command ?? '')}</pre>
+  const diff = step.diff ?? step.approval?.diff ?? argsDiff(step)
+  return diff ? <Diff text={diff} /> : null
 }
 
 function Approval({ step, chatId, msgId }: { step: ToolStep; chatId: string; msgId: string }) {
@@ -85,8 +102,12 @@ function Approval({ step, chatId, msgId }: { step: ToolStep; chatId: string; msg
   )
 }
 
-export function ToolRow({ step, chatId, msgId }: { step: ToolStep; chatId: string; msgId: string }) {
-  const [open, setOpen] = useState(false)
+const took = (ms: number): string => (ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`)
+
+export function ToolRow({ step, chatId, msgId, expanded = false }: { step: ToolStep; chatId: string; msgId: string; expanded?: boolean }) {
+  // Closed by default, open in transcript view; a click overrides either.
+  const [choice, setOpen] = useState<boolean | null>(null)
+  const open = choice ?? expanded
   const info = TOOLS[step.name] ?? { verb: step.name, icon: 'bolt' as IconName, arg: '' }
   const arg = info.arg ? String(step.args[info.arg] ?? '') : ''
   const running = step.output === undefined
@@ -94,16 +115,26 @@ export function ToolRow({ step, chatId, msgId }: { step: ToolStep; chatId: strin
   const state = running ? (waiting ? 'wait' : 'run') : step.ok ? 'ok' : 'bad'
   return (
     <div className={`tool ${state}`}>
-      <button type="button" className="tool-head" onClick={() => setOpen(o => !o)} aria-expanded={open} disabled={running}>
+      <button type="button" className="tool-head" onClick={() => setOpen(!open)} aria-expanded={open} disabled={running}>
         <span className="tool-dot" aria-hidden="true" />
         <Icon name={info.icon} size={14} />
         <span className="tool-verb">{info.verb}</span>
         {arg && <code className="tool-arg" title={arg}>{short(arg, 90)}</code>}
-        {!running && <span className="tool-sum">{summary(step)}</span>}
+        {!running && <span className="tool-sum">{summary(step)}{step.ms !== undefined && step.ms >= 1000 ? ` · ${took(step.ms)}` : ''}</span>}
         {running && !waiting && <span className="tool-sum shimmer">working</span>}
-        {!running && step.output && <Icon name="chevron" size={13} className={`tool-chev${open ? ' rot' : ''}`} />}
+        {!running && <Icon name="chevron" size={13} className={`tool-chev${open ? ' rot' : ''}`} />}
       </button>
-      {step.approval && (step.approval.answer === undefined || open) && <Approval step={step} chatId={chatId} msgId={msgId} />}
+      {step.approval && step.approval.answer === undefined && <Approval step={step} chatId={chatId} msgId={msgId} />}
+      {/* A running command: its output as it arrives, whatever the view. */}
+      {running && step.live && <pre className="tool-out live" aria-live="off">{step.live}</pre>}
+      {/* An edit that needed no approval: always show what changed. */}
+      {!open && !step.approval && step.diff && <Diff text={step.diff} />}
+      {open && !(step.approval && step.approval.answer === undefined) && <Detail step={step} />}
+      {open && step.approval?.answer && (
+        <div className={`approval-result ${step.approval.answer === 'no' ? 'bad' : 'ok'}`}>
+          {step.approval.answer === 'no' ? 'Denied' : step.approval.answer === 'always' ? 'Allowed for this chat' : 'Allowed'}
+        </div>
+      )}
       {open && step.output && <pre className="tool-out">{short(step.output, 4000)}</pre>}
     </div>
   )

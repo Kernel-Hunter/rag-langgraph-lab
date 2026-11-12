@@ -94,9 +94,14 @@ and asks you before it changes a file or runs a command. It starts in the folder
 ran it and is free to leave: absolute paths and `~` work, and "go to the api project" or
 `/cd ../api` moves the whole session there.
 
-While it works you see each step: the tool it called, a summary of the result, the output
-of a running command as it arrives, and a diff for every edit. Each answer ends with a line
-such as `✓ 12s · 3 tool calls · 4.1k in, 320 out · context 18%`.
+While it works you see what it is doing, live: the model's thinking as it is written (for
+models that show it), the tool call it is preparing, the output of a running command as it
+arrives, and a diff for every edit. Each answer ends with a line such as
+`✓ 12s · 3 tool calls · 4.1k in, 320 out · context 18%`.
+
+Press `Ctrl+O` for transcript view. It keeps the thinking on screen in full and shows every
+command line and all tool output, where the normal view prints one summary line per step.
+`/transcript` prints the whole conversation that way, including earlier turns.
 
 | In a session | |
 |---|---|
@@ -106,7 +111,8 @@ such as `✓ 12s · 3 tool calls · 4.1k in, 320 out · context 18%`.
 | `/new` | start a new conversation (the old one is saved) |
 | `/resume`, `/sessions` | go back to an earlier conversation, or list them |
 | `/logs` | what the agent did in this conversation (`/logs full` adds arguments and output) |
-| `/verbose` or `Ctrl+O` | show full tool output while it works |
+| `/verbose` or `Ctrl+O` | transcript view: thinking and full tool output while it works |
+| `/transcript` | print the whole conversation in detail: thinking, commands, edits, output |
 | `/status` | model, folder, session id, tokens used and how full the context is |
 | `/model`, `/key` | switch provider and model, set the API key |
 | `/mode` or `Shift+Tab` | cycle `ask`, `auto-edit`, `yolo` |
@@ -144,7 +150,8 @@ vesper logs --json        # one JSON object per event, for scripts
 
 The database is an ordinary SQLite file with three tables (`sessions`, `messages`,
 `events`), so `sqlite3 ~/.vesper/vesper.db` works on it too. The desktop app's Folder mode
-writes to the same file.
+reads and writes the same file, so a conversation started in the terminal can be continued
+in the app and the other way round.
 
 A project can tell Vesper how to work in it. If the working directory has a `VESPER.md`,
 `AGENTS.md`, `CLAUDE.md` or `.cursorrules` file, the first one found is added to the
@@ -158,6 +165,12 @@ The desktop app does the same work with a window around it. Open a folder from t
 top bar, and every tool call shows up inline: what the agent read, what it searched, and
 a colored diff with Allow, Always allow and Deny before any change. When the agent moves
 to another folder, the top bar follows it.
+
+The sidebar lists your chats and, under "Session history", the conversations saved by the
+terminal app. Click one to open it with every step it took, and your next message continues
+it in its folder. The Transcript button in the top bar (`Cmd+O` or `Ctrl+O`) opens every
+step: the model's thinking, each command line, each diff and the full output. A running
+command streams its output into the chat in either view.
 
 It also has a Docs mode for a fixed set of documents: drop in PDFs, Markdown or text files
 and get streamed answers with clickable page citations. Docs mode is where Vesper started,
@@ -273,7 +286,7 @@ Document question answering also works from the command line: `vesper ask`, `ves
 model you picked in Vesper unless you pass `--llm`. `vesper eval` scores
 `eval/questions.yaml`, so you can compare chunk sizes, `k` and models with numbers.
 
-Releases: push a tag such as `v0.5.0` and GitHub Actions builds, smoke-tests and publishes
+Releases: push a tag such as `v0.6.0` and GitHub Actions builds, smoke-tests and publishes
 macOS, Linux and Windows builds with checksums.
 
 ## Contributing

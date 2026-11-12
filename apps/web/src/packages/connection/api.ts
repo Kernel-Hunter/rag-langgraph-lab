@@ -63,6 +63,35 @@ export interface ServerState {
   docs: { name: string; size: number }[]
 }
 
+/** A conversation saved in the session database (terminal and desktop write to the same one). */
+export interface SavedSession {
+  id: string
+  title: string
+  cwd: string
+  provider: string
+  model: string
+  source: 'terminal' | 'print' | 'desktop'
+  created_at: number
+  updated_at: number
+  messages?: number
+}
+
+export type TurnPart =
+  | { type: 'reasoning'; text: string }
+  | { type: 'text'; text: string }
+  | { type: 'tool'; id: string; name: string; args: Record<string, unknown>; output: string | null; ok: boolean | null }
+
+export type Turn = { role: 'user'; text: string } | { role: 'assistant'; parts: TurnPart[] }
+
+export interface Usage {
+  input: number
+  output: number
+  context: number
+  seconds: number
+  tools: number
+  estimated?: boolean
+}
+
 export interface Source {
   page: number | string | null
   source: string | null
@@ -75,8 +104,14 @@ export type StreamEvent =
   | { event: 'token'; data: { text: string } }
   | { event: 'check'; data: { supported: boolean } }
   | { event: 'error'; data: { message: string } }
+  | { event: 'session'; data: { id: string; cwd: string } }
+  | { event: 'reasoning'; data: { text: string } }
+  | { event: 'tool_draft'; data: { name: string; chars: number } }
   | { event: 'tool_start'; data: { id: string | null; name: string; args: Record<string, unknown> } }
-  | { event: 'tool_end'; data: { id: string | null; name: string; output: string; ok: boolean } }
+  | { event: 'tool_end'; data: { id: string | null; name: string; output: string; ok: boolean; ms?: number | null } }
+  | { event: 'output'; data: { line: string } }
+  | { event: 'auto'; data: { kind: 'edit' | 'run'; tool: string; path?: string; diff?: string } }
+  | { event: 'usage'; data: Usage }
   | { event: 'cwd'; data: { path: string } }
   | { event: 'notice'; data: { text: string } }
   | { event: 'approval'; data: ApprovalRequest }
@@ -141,10 +176,17 @@ export const api = {
   forgetChat: async (chatId: string): Promise<void> => {
     await request(`/api/chats/${encodeURIComponent(chatId)}`, { method: 'DELETE' })
   },
+  sessions: async (): Promise<SavedSession[]> =>
+    ((await (await request('/api/sessions?limit=200')).json()) as { sessions: SavedSession[] }).sessions,
+  session: async (id: string): Promise<SavedSession & { turns: Turn[] }> =>
+    (await request(`/api/sessions/${encodeURIComponent(id)}`)).json(),
+  deleteSession: async (id: string): Promise<void> => {
+    await request(`/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  },
 
   /** Streams one answer. Calls onEvent for each event; resolves when the stream ends. */
   async chat(
-    body: { question: string; chat_id: string; history: ChatTurn[] },
+    body: { question: string; chat_id: string; history: ChatTurn[]; session_id?: string },
     onEvent: (e: StreamEvent) => void,
     signal: AbortSignal,
   ): Promise<void> {
