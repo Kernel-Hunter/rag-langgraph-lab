@@ -1,7 +1,7 @@
-"""Code 2 + 3 of 3: the state, the nodes, and the graph. Slides 6 and 7.
+"""Docs mode, Graph: retrieve the closest chunks, then answer from them (a LangGraph graph).
 
-Optional third node `check` ("Going further" task 2): asks the model whether
-the answer is supported by the retrieved context and stores a yes/no flag.
+The optional third node, `check`, asks the model whether the answer is supported by the
+retrieved context and stores a yes/no flag.
 """
 
 from typing import TypedDict
@@ -9,18 +9,11 @@ from typing import TypedDict
 from langchain_core.documents import Document
 from langgraph.graph import END, START, StateGraph
 
-PROMPT = (
-    "You are the help desk of MEDTECH. Answer ONLY from the "
-    "context. If the answer is not there, say 'I don't know'. "
-    "Cite the sources you used as [page N].\n\n"
-    "Context:\n{context}\n\nQuestion: {question}"
-)
+from vesper.prompts import DOCS_CHECK_PROMPT, DOCS_PROMPT
 
-CHECK_PROMPT = (
-    "Context:\n{context}\n\nAnswer:\n{answer}\n\n"
-    "Is every claim in the answer supported by the context? "
-    "An answer of 'I don't know' counts as supported. Reply with exactly one word: yes or no."
-)
+# The prompts live in prompts.py with all the others.
+PROMPT = DOCS_PROMPT
+CHECK_PROMPT = DOCS_CHECK_PROMPT
 
 
 class State(TypedDict, total=False):  # the shared notebook

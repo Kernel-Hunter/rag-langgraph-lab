@@ -36,6 +36,8 @@ export interface ApprovalRequest {
   diff?: string
   command?: string
   cwd?: string
+  /** Risky enough to need a yes every time: no "always allow". */
+  strict?: boolean
 }
 
 export type ApprovalAnswer = 'yes' | 'always' | 'no'
@@ -75,6 +77,8 @@ export type StreamEvent =
   | { event: 'error'; data: { message: string } }
   | { event: 'tool_start'; data: { id: string | null; name: string; args: Record<string, unknown> } }
   | { event: 'tool_end'; data: { id: string | null; name: string; output: string; ok: boolean } }
+  | { event: 'cwd'; data: { path: string } }
+  | { event: 'notice'; data: { text: string } }
   | { event: 'approval'; data: ApprovalRequest }
   | { event: 'approval_done'; data: { id: string; answer: ApprovalAnswer; timeout?: boolean } }
   | { event: 'done'; data: Record<string, never> }

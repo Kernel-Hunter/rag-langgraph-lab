@@ -33,7 +33,7 @@ function FolderEmpty({ workspace, terminal }: { workspace: string; terminal: boo
           <p className="sub">
             {workspace
               ? 'Vesper can read and search every file here, edit code and documents, and run commands. It asks before changing anything.'
-              : 'Pick a project, a folder of notes or a folder of PDFs. Vesper works inside it, like a teammate at your keyboard.'}
+              : 'Pick a project, a folder of notes or a folder of PDFs. Vesper starts there and works like a teammate at your keyboard.'}
           </p>
         </>
       )}

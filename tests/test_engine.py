@@ -223,9 +223,16 @@ def test_fake_llm_agent_mode(server, monkeypatch):
 
 def test_fake_llm_off_by_default(server, monkeypatch):
     monkeypatch.delenv("VESPER_FAKE_LLM", raising=False)
+    from langchain_ollama import ChatOllama
     from langchain_openai import ChatOpenAI
 
-    assert isinstance(server.prov.get_llm("ollama"), ChatOpenAI)
+    llm = server.prov.get_llm("ollama")
+    # The native client, with a context window large enough for an agent (the default is 4096).
+    assert isinstance(llm, ChatOllama) and llm.num_ctx >= 8192 and not llm.base_url.endswith("/v1")
+    monkeypatch.setenv("VESPER_OLLAMA_CTX", "32768")
+    assert server.prov.get_llm("ollama").num_ctx == 32768 and server.prov.context_tokens("ollama") == 32768
+    monkeypatch.setenv("GROQ_API_KEY", "x")
+    assert isinstance(server.prov.get_llm("groq"), ChatOpenAI)
 
 
 # ----- home folder -----

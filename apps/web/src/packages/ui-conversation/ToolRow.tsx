@@ -9,6 +9,7 @@ const TOOLS: Record<string, { verb: string; icon: IconName; arg: string }> = {
   glob: { verb: 'Find', icon: 'search', arg: 'pattern' },
   grep: { verb: 'Search', icon: 'search', arg: 'pattern' },
   search_docs: { verb: 'Search docs', icon: 'search', arg: 'query' },
+  change_directory: { verb: 'Go to', icon: 'folder', arg: 'path' },
   write_file: { verb: 'Write', icon: 'edit', arg: 'path' },
   edit_file: { verb: 'Edit', icon: 'edit', arg: 'path' },
   run_command: { verb: 'Run', icon: 'terminal', arg: 'command' },
@@ -68,10 +69,14 @@ function Approval({ step, chatId, msgId }: { step: ToolStep; chatId: string; msg
         ? (
           <div className="approval-actions">
             <button type="button" className="btn primary" disabled={a.sending} onClick={() => answer('yes')} autoFocus>Allow</button>
-            <button type="button" className="btn" disabled={a.sending} onClick={() => answer('always')}
-              title={a.kind === 'run' ? 'Run commands without asking for the rest of this chat' : 'Edit files without asking for the rest of this chat'}>
-              Always allow {a.kind === 'run' ? 'commands' : 'edits'}
-            </button>
+            {a.strict
+              ? <span className="dim">Needs a yes every time.</span>
+              : (
+                <button type="button" className="btn" disabled={a.sending} onClick={() => answer('always')}
+                  title={a.kind === 'run' ? 'Run commands without asking for the rest of this chat' : 'Edit files without asking for the rest of this chat'}>
+                  Always allow {a.kind === 'run' ? 'commands' : 'edits'}
+                </button>
+              )}
             <button type="button" className="btn ghost danger" disabled={a.sending} onClick={() => answer('no')}>Deny</button>
           </div>
         )

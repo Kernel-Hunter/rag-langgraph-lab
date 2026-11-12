@@ -1,0 +1,296 @@
+"""Saved history (SQLite), resuming, the activity log and the terminal commands around them. Offline."""
+
+import json
+import sqlite3
+
+import pytest
+from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+from vesper import prompts
+from vesper.coder import Session, fit_history, repair_history
+from vesper.store import Store
+from vesper.workspace import Workspace
+
+
+class ToolFake(GenericFakeChatModel):
+    def bind_tools(self, tools, **kwargs):
+        return self
+
+
+def fake(*replies):
+    return ToolFake(disable_streaming=True, messages=iter(replies))
+
+
+def call(name, call_id="c1", **args):
+    return AIMessage(content="", tool_calls=[{"name": name, "args": args, "id": call_id}])
+
+
+@pytest.fixture
+def store(tmp_path):
+    s = Store(tmp_path / "db" / "vesper.db")
+    yield s
+    s.close()
+
+
+@pytest.fixture
+def proj(tmp_path):
+    root = tmp_path / "proj"
+    (root / "sub").mkdir(parents=True)
+    (root / "a.txt").write_text("alpha\n")
+    return root
+
+
+# ---------------------------------------------------------------- the store
+def test_store_roundtrip(store, tmp_path):
+    sid = store.create_session(tmp_path, "ollama", "qwen", "terminal", title="first  question\nhere")
+    assert store.list_sessions() == []  # no messages yet: not listed
+    messages = [HumanMessage("hi"), call("read_file", path="a.txt"),
+                ToolMessage("alpha", tool_call_id="c1", name="read_file"), AIMessage("It says alpha.")]
+    store.save_messages(sid, messages)
+    store.save_messages(sid, messages)  # saving again replaces, never duplicates
+    back = store.load_messages(sid)
+    assert [m.type for m in back] == ["human", "ai", "tool", "ai"]
+    assert back[1].tool_calls[0]["args"] == {"path": "a.txt"} and back[2].tool_call_id == "c1"
+    row = store.list_sessions()[0]
+    assert row["messages"] == 4 and row["cwd"] == str(tmp_path) and row["model"] == "qwen"
+    assert store.get_session(sid[:5])["id"] == sid and store.get_session("zzz") is None
+    assert store.latest(tmp_path)["id"] == sid and store.latest(tmp_path / "other") is None
+    store.update_session(sid, cwd=tmp_path / "other", title="renamed")
+    assert store.latest(tmp_path / "other")["title"] == "renamed"
+    store.add_event(sid, "tool", "read_file", {"args": {"path": "a.txt"}, "output": "x" * 50_000}, ok=True, ms=12)
+    event = store.events(sid)[0]
+    assert event["ok"] is True and event["ms"] == 12 and len(event["detail"]["output"]) < 21_000
+    store.delete_session(sid)
+    assert store.get_session(sid) is None and store.events(sid) == [] and store.load_messages(sid) == []
+
+
+def test_store_is_a_plain_sqlite_file(store, tmp_path):
+    store.create_session(tmp_path)
+    tables = {r[0] for r in sqlite3.connect(store.path).execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert {"sessions", "messages", "events"} <= tables
+
+
+# ---------------------------------------------------------------- sessions
+def test_session_is_saved_logged_and_resumed(store, proj):
+    ws = Workspace(proj, mode="yolo")
+    s = Session(fake(call("read_file", path="a.txt"), AIMessage("It says alpha.")), ws, store,
+                provider="ollama", model="qwen")
+    events = list(s.ask("what is in a.txt?"))
+    kinds = [e for e, _ in events]
+    assert kinds[-2:] == ["usage", "done"]
+    usage = dict(events)["usage"]
+    assert usage["tools"] == 1 and usage["output"] > 0 and usage["seconds"] >= 0
+    end = next(d for e, d in events if e == "tool_end")
+    assert end["ok"] and end["ms"] is not None
+
+    row = store.get_session(s.id)
+    assert row["title"] == "what is in a.txt?" and row["cwd"] == str(proj.resolve())
+    log = store.events(s.id)
+    assert [e["kind"] for e in log] == ["prompt", "tool", "usage"]
+    assert log[1]["name"] == "read_file" and log[1]["detail"]["args"] == {"path": "a.txt"}
+    assert "alpha" in log[1]["detail"]["output"]
+
+    again = Session(fake(AIMessage("Yes.")), Workspace(proj), store, session_id=s.id[:6])
+    assert again.id == s.id and len(again.history) == len(s.history) == 4
+    list(again.ask("sure?"))
+    assert len(store.load_messages(s.id)) == 6
+
+    s.clear()
+    assert s.history == [] and s.id != row["id"] and store.get_session(row["id"]) is not None
+
+
+def test_agent_can_move_between_folders(store, proj):
+    ws = Workspace(proj, mode="yolo")
+    s = Session(fake(call("change_directory", path="sub"), call("write_file", "c2", path="note.txt", content="hi\n"),
+                     AIMessage("Done.")), ws, store)
+    events = list(s.ask("go into sub and write a note"))
+    assert ("cwd", {"path": str((proj / "sub").resolve())}) in events
+    assert (proj / "sub" / "note.txt").read_text() == "hi\n"
+    assert store.get_session(s.id)["cwd"] == str((proj / "sub").resolve())
+    assert "cwd" in [e["kind"] for e in store.events(s.id)]
+    # The next turn's system prompt names the new folder.
+    s.set_llm(fake(AIMessage("ok")))
+    list(s.ask("and now?"))
+    assert s._agent_cwd == (proj / "sub").resolve()
+
+
+def test_failed_turn_is_logged_and_history_stays_usable(store, proj):
+    class Broken(ToolFake):
+        def _generate(self, *a, **k):
+            raise RuntimeError("model exploded")
+
+    s = Session(Broken(messages=iter([])), Workspace(proj), store)
+    with pytest.raises(RuntimeError):
+        list(s.ask("hello"))
+    assert [e["kind"] for e in store.events(s.id)] == ["prompt", "error"]
+    s.set_llm(fake(AIMessage("fine now")))
+    assert "fine now" in "".join(d.get("text", "") for e, d in s.ask("again") if e == "token")
+
+
+def test_stopped_turn_keeps_a_valid_history(store, proj):
+    s = Session(fake(call("read_file", path="a.txt"), AIMessage("never reached")), Workspace(proj), store)
+    gen = s.ask("read it")
+    for event, _ in gen:
+        if event == "tool_start":
+            gen.close()  # the user pressed Ctrl+C
+            break
+    assert s.history and isinstance(s.history[0], HumanMessage)
+    answered = {m.tool_call_id for m in s.history if isinstance(m, ToolMessage)}
+    assert all(c["id"] in answered for m in s.history if isinstance(m, AIMessage) for c in m.tool_calls)
+    assert "interrupt" in [e["kind"] for e in store.events(s.id)]
+
+
+def test_repair_and_fit_history():
+    broken = [AIMessage("stray"), HumanMessage("q"), call("grep", "x1", pattern="a")]
+    fixed = repair_history(broken)
+    assert isinstance(fixed[0], HumanMessage) and isinstance(fixed[-1], ToolMessage) and fixed[-1].tool_call_id == "x1"
+
+    big = "y" * 5000
+    history = []
+    for i in range(6):
+        history += [HumanMessage(f"q{i}"), call("read_file", f"c{i}", path="f"),
+                    ToolMessage(big, tool_call_id=f"c{i}", name="read_file"), AIMessage(f"a{i}")]
+    same, cut = fit_history(history, 10**9)
+    assert same is history and not cut
+    trimmed, cut = fit_history(history, 12_000)
+    assert cut and len(trimmed) == len(history)             # old tool output shortened, nothing dropped
+    assert len(trimmed[2].content) < 2000 and trimmed[-2].content == big  # the latest turn is untouched
+    small, cut = fit_history(history, 6_000)
+    assert cut and isinstance(small[0], HumanMessage) and small[-1].content == "a5" and len(small) < len(history)
+
+
+def test_long_conversation_is_trimmed_with_a_notice(proj):
+    s = Session(fake(AIMessage("ok")), Workspace(proj), context_tokens=100)
+    s.history = [HumanMessage("old " * 300), AIMessage("old answer " * 300), HumanMessage("b"), AIMessage("c")]
+    assert "notice" in [e for e, _ in s.ask("next")]
+
+
+# ---------------------------------------------------------------- prompts
+def test_system_prompt_is_general_and_reads_project_instructions(proj):
+    text = prompts.agent_system_prompt(proj)
+    assert str(proj) in text and "change_directory" in text and "Project instructions" not in text
+    for word in ("MEDTECH", "handbook", "help desk"):
+        assert word.lower() not in text.lower()
+        assert word.lower() not in (prompts.DOCS_PROMPT + prompts.DOCS_AGENT_PROMPT + prompts.DOCS_CHECK_PROMPT).lower()
+    (proj / "AGENTS.md").write_text("Use tabs.\n")
+    assert "Project instructions (AGENTS.md)" in prompts.agent_system_prompt(proj)
+    (proj / "VESPER.md").write_text("Use spaces.\n")
+    assert "Use spaces." in prompts.agent_system_prompt(proj) and "Use tabs." not in prompts.agent_system_prompt(proj)
+
+
+# ---------------------------------------------------------------- terminal app
+@pytest.fixture
+def app(proj, store, monkeypatch):
+    from vesper import tui
+
+    monkeypatch.setenv("VESPER_FAKE_LLM", "1")
+    monkeypatch.setattr(tui, "save_config", lambda patch: None)
+    a = tui.App(proj, "yolo", {}, store)
+    a.build()
+    return a
+
+
+def test_terminal_turn_cd_sessions_logs_and_resume(app, proj, store, capsys):
+    app.run_turn("make notes", shown="make notes")
+    assert (proj / "vesper-notes.md").exists()
+    out = capsys.readouterr().out
+    assert "List" in out and "Write" in out and "tool call" in out and "Created vesper-notes.md" in out
+
+    assert app.command("/cd sub") and app.root == (proj / "sub").resolve()
+    app.shell("cd ..")
+    assert app.root == proj.resolve()
+    app.command("/cd nowhere")
+    assert "does not exist" in capsys.readouterr().out and app.root == proj.resolve()
+
+    for cmd in ("/sessions", "/logs", "/logs full", "/status", "/help", "/verbose", "/verbose", "/bogus"):
+        assert app.command(cmd)
+    out = capsys.readouterr().out
+    assert "make notes" in out and "vesper-notes.md" in out and "Unknown command /bogus" in out
+
+    first = app.session.id
+    app.command("/new")
+    assert app.session.id != first and app.session.history == []
+    app.cd("sub")
+    app.resume("1")
+    assert app.session.id == first and len(app.session.history) > 0 and app.root == proj.resolve()
+    assert "Resumed" in capsys.readouterr().out
+    assert app.command("/exit") is False
+
+
+def test_cli_sessions_logs_and_continue(proj, monkeypatch, capsys):
+    from vesper import tui
+
+    monkeypatch.setenv("VESPER_FAKE_LLM", "1")
+    monkeypatch.setattr(tui, "load_config", lambda: {})
+    monkeypatch.setattr("sys.stdin", None)
+    assert tui.main(["-C", str(proj), "--mode", "yolo", "first question"]) == 0
+    assert tui.main(["sessions", "--json"]) == 0
+    rows = json.loads(_json_tail(capsys, tui, ["sessions", "--json"]))
+    mine = [r for r in rows if r["cwd"] == str(proj.resolve())]
+    assert mine and mine[0]["title"] == "first question" and mine[0]["source"] == "print"
+    sid = mine[0]["id"]
+
+    assert tui.main(["logs", sid[:6]]) == 0
+    out = capsys.readouterr().out
+    assert "first question" in out and "List" in out and "Write" in out
+    assert tui.main(["logs", "no-such-session"]) == 1
+
+    assert tui.main(["-C", str(proj), "-c", "second question"]) == 0     # continue the last one in this folder
+    assert tui.main(["-r", sid[:6], "third question"]) == 0              # resume by id, from anywhere
+    capsys.readouterr()
+    from vesper.store import Store as S
+
+    assert sum(m.type == "human" for m in S().load_messages(sid)) == 3
+    assert tui.main(["-r", "no-such-session", "x"]) == 2
+
+
+def _json_tail(capsys, tui, argv):
+    capsys.readouterr()
+    tui.main(argv)
+    return capsys.readouterr().out
+
+
+def test_lab_cli_uses_saved_provider_and_reports_errors_briefly(monkeypatch, capsys, tmp_path):
+    from vesper import cli, onboarding
+
+    monkeypatch.setattr(onboarding, "load_config", lambda: {"provider": "groq", "model": "llama-x"})
+    monkeypatch.chdir(tmp_path)  # away from the repo's own .env
+    monkeypatch.delenv("LLM_PROVIDER", raising=False)
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    seen = {}
+
+    def get_llm(provider=None, model=None):
+        seen.update(provider=provider, model=model)
+        raise RuntimeError("Error code: 401 - incorrect api key")
+
+    monkeypatch.setattr(cli, "get_llm", get_llm)
+    doc = tmp_path / "d.md"
+    doc.write_text("# T\n\nhello\n")
+    assert cli.main(["ask", "hi", "--embeddings", "fake", "--docs", str(doc)]) == 1
+    assert seen == {"provider": "groq", "model": "llama-x"}
+    err = capsys.readouterr().err
+    assert "rejected the API key" in err and "Traceback" not in err
+
+
+# ---------------------------------------------------------------- desktop engine
+def test_engine_folder_follows_the_agent_and_saves_history(server, tmp_path, monkeypatch):
+    proj = tmp_path / "proj"
+    (proj / "sub").mkdir(parents=True)
+    engine = server.Engine()
+    engine.update({"mode": "folder", "workspace": str(proj), "agent_mode": "yolo"})
+    llm = fake(call("change_directory", path="sub"), AIMessage("Moved."), AIMessage("Still here."))
+    monkeypatch.setattr(engine, "llm", lambda: llm)
+    events = list(engine.stream_answer("go into sub", "chat-a", []))
+    sub = str((proj / "sub").resolve())
+    assert ("cwd", {"path": sub}) in events and events[-1][0] == "done"
+    assert engine.settings["workspace"] == sub            # the app's folder chip follows the agent
+    list(engine.stream_answer("where are we?", "chat-a", []))
+    session = engine._sessions["chat-a"]["session"]
+    assert str(session.workspace.root) == sub and len(session.history) == 6
+    rows = engine.history_db().list_sessions()
+    assert rows and rows[0]["source"] == "desktop" and rows[0]["cwd"] == sub
+    engine.update({"workspace": str(proj)})               # the user picks a folder in the app
+    engine._sessions["chat-a"]["session"].set_llm(fake(AIMessage("Back.")))
+    list(engine.stream_answer("and now?", "chat-a", []))
+    assert session.workspace.root == proj.resolve()

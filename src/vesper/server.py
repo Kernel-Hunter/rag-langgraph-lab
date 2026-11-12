@@ -361,6 +361,19 @@ class Engine:
         self._sessions: OrderedDict[str, dict] = OrderedDict()
         self._sessions_lock = threading.Lock()
         self._approvals: dict[str, dict] = {}
+        self._history_db = None
+
+    def history_db(self):
+        """The SQLite session store shared with the terminal app; None if it cannot be opened."""
+        if self._history_db is None:
+            from vesper.store import Store
+
+            try:
+                self._history_db = Store()
+            except Exception:  # noqa: BLE001 - the app works without saved history
+                traceback.print_exc()
+                self._history_db = False
+        return self._history_db or None
 
     # ----- settings -----
     def save(self):
@@ -570,32 +583,39 @@ class Engine:
 
     # ----- folder agent -----
     def _folder_session(self, chat_id: str, history: list):
-        """The agent session for one chat, rebuilt when the folder, model or approval mode changes."""
+        """The agent session for one chat, rebuilt when the model changes. It follows the folder
+        picked in the app, and the agent may move on from there itself."""
         from langchain_core.messages import AIMessage, HumanMessage
 
         from vesper.coder import Session
         from vesper.workspace import Workspace
 
         s = self.settings
-        key = (s["workspace"], s["provider"], s["model"], s["embeddings"])
+        key = (s["provider"], s["model"], s["embeddings"])
         with self._sessions_lock:
             entry = self._sessions.get(chat_id)
             if entry is not None and entry["key"] == key:
                 self._sessions.move_to_end(chat_id)
-                entry["session"].workspace.mode = s["agent_mode"]
+                ws = entry["session"].workspace
+                ws.mode = s["agent_mode"]
+                if entry["picked"] != s["workspace"]:  # the user opened another folder in the app
+                    entry["picked"] = s["workspace"]
+                    ws.change_directory(s["workspace"])
                 return entry
             emb = s["embeddings"]
             ws = Workspace(Path(s["workspace"]), mode=s["agent_mode"],
                            embeddings_factory=lambda: prov.get_embeddings(emb, s["embed_model"] or None))
-            session = Session(self.llm(), ws)
+            session = Session(self.llm(), ws, self.history_db(), source="desktop", provider=s["provider"],
+                              model=s["model"], context_tokens=prov.context_tokens(s["provider"]))
             if entry is not None:
-                session.history = entry["session"].history  # same chat, new model or folder
+                old = entry["session"]  # same chat, new model: keep the conversation and its saved row
+                session.history, session.id, session.title, session._saved = old.history, old.id, old.title, old._saved
             else:
                 for turn in history[-MAX_HISTORY_TURNS:]:
                     text = str(turn.get("text", ""))[:20000] if isinstance(turn, dict) else ""
                     if text:
                         session.history.append(HumanMessage(text) if turn.get("role") == "user" else AIMessage(text))
-            entry = {"key": key, "session": session, "lock": threading.Lock()}
+            entry = {"key": key, "session": session, "lock": threading.Lock(), "picked": s["workspace"]}
             self._sessions[chat_id] = entry
             while len(self._sessions) > MAX_SESSIONS:
                 self._sessions.popitem(last=False)
@@ -642,6 +662,11 @@ class Engine:
         def work():
             try:
                 for item in session.ask(question):
+                    if closed.is_set():
+                        break
+                    if item[0] == "cwd":  # the agent moved: the app's folder follows it
+                        entry["picked"] = self.settings["workspace"] = item[1]["path"]
+                        self.save()
                     if item[0] != "done":
                         events.put(item)
             except Exception as exc:
@@ -659,8 +684,9 @@ class Engine:
                     break
                 yield item
         finally:
-            # The client went away or the answer ended: refuse anything still waiting.
+            # The client went away or the answer ended: stop commands, refuse anything still waiting.
             closed.set()
+            session.workspace.cancel()
             for aid in mine:
                 slot = self._approvals.pop(aid, None)
                 if slot is not None:

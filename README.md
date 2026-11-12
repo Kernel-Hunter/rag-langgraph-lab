@@ -4,18 +4,18 @@
 
 # Vesper
 
-**An AI agent that works inside your folders, in the terminal or as a desktop app.**
+**An AI coding agent for your terminal, with a desktop app.**
 
-Vesper reads, searches and edits the files in any folder, runs commands when you allow it,
-and answers questions about your PDFs with the page each answer came from.
-Use it with 17 model providers, or offline with Ollama.
+Vesper reads, searches and edits files, runs commands when you allow it, and moves between
+folders and projects when you ask. Every conversation is saved, so you can resume it later
+and see exactly what the agent did. Use it with 17 model providers, or offline with Ollama.
 
 [![tests](https://github.com/Kernel-Hunter/vesper/actions/workflows/ci.yml/badge.svg)](https://github.com/Kernel-Hunter/vesper/actions/workflows/ci.yml)
 [![release](https://img.shields.io/github/v/release/Kernel-Hunter/vesper?color=8b7cff)](https://github.com/Kernel-Hunter/vesper/releases/latest)
 [![license: MIT](https://img.shields.io/badge/license-MIT-2dd4bf)](LICENSE)
 ![platforms](https://img.shields.io/badge/macOS%20%C2%B7%20Linux%20%C2%B7%20Windows-555)
 
-[Install](#install) · [Quick start](#quick-start) · [Desktop app](#desktop-app) · [Models](#models) · [Safety](#safety) · [Contributing](#contributing)
+[Install](#install) · [Quick start](#quick-start) · [Sessions and logs](#sessions-and-logs) · [Desktop app](#desktop-app) · [Models](#models) · [Safety](#safety) · [Contributing](#contributing)
 
 <img src="docs/terminal.svg" alt="Vesper in a terminal: it runs the tests, finds the bug, shows a diff, waits for approval, then runs the tests again" width="760">
 
@@ -86,22 +86,34 @@ hidden and stored only on your computer). Then describe what you want:
 ❯ the login test fails, find out why and fix it
 ❯ summarize every PDF in ./papers and cite the pages
 ❯ add a --verbose flag to cli.py and update the README
+❯ go to ~/projects/api and run its tests
 ```
 
 Vesper looks around before it answers: it lists folders, reads files, searches the code,
-and asks you before it changes a file or runs a command.
+and asks you before it changes a file or runs a command. It starts in the folder where you
+ran it and is free to leave: absolute paths and `~` work, and "go to the api project" or
+`/cd ../api` moves the whole session there.
+
+While it works you see each step: the tool it called, a summary of the result, the output
+of a running command as it arrives, and a diff for every edit. Each answer ends with a line
+such as `✓ 12s · 3 tool calls · 4.1k in, 320 out · context 18%`.
 
 | In a session | |
 |---|---|
 | `@path` | attach a file to your message (Tab completes paths) |
-| `!command` | run a shell command yourself |
-| `/model` | switch provider and model |
-| `/key` | set the API key for the current provider |
+| `!command` | run a shell command yourself; `!cd folder` moves Vesper too |
+| `/cd folder` | go to another folder or project |
+| `/new` | start a new conversation (the old one is saved) |
+| `/resume`, `/sessions` | go back to an earlier conversation, or list them |
+| `/logs` | what the agent did in this conversation (`/logs full` adds arguments and output) |
+| `/verbose` or `Ctrl+O` | show full tool output while it works |
+| `/status` | model, folder, session id, tokens used and how full the context is |
+| `/model`, `/key` | switch provider and model, set the API key |
 | `/mode` or `Shift+Tab` | cycle `ask`, `auto-edit`, `yolo` |
-| `/clear` | start a new conversation |
 | `/docs` | re-read the documents in the folder |
 | `/app` | open the desktop app |
 | `/help`, `/exit` | help, quit (`Ctrl+D` works too) |
+| `Ctrl+C` | stop the answer and any command it started |
 
 One-shot mode prints the answer and exits, which is handy in scripts:
 
@@ -114,13 +126,38 @@ vesper -C ~/notes --model ollama/llama3.2 "what did I write about the budget?"
 In one-shot mode nobody can answer an approval prompt, so `ask` mode refuses edits and
 commands there. Pass `--mode auto-edit` or `--mode yolo` when you want them.
 
+## Sessions and logs
+
+Every conversation is stored in a SQLite database at `~/.vesper/vesper.db`: the messages,
+so a session resumes exactly where it stopped, and an activity log with every prompt, tool
+call, result, error and token count.
+
+```bash
+vesper -c                 # continue the last conversation in this folder
+vesper -r                 # pick a conversation from a list
+vesper -r 3f9a2c          # resume one by id (the first characters are enough)
+vesper sessions           # list saved conversations, newest first
+vesper logs               # what the agent did in the latest conversation
+vesper logs 3f9a2c --full # the same, with tool arguments and output
+vesper logs --json        # one JSON object per event, for scripts
+```
+
+The database is an ordinary SQLite file with three tables (`sessions`, `messages`,
+`events`), so `sqlite3 ~/.vesper/vesper.db` works on it too. The desktop app's Folder mode
+writes to the same file.
+
+A project can tell Vesper how to work in it. If the working directory has a `VESPER.md`,
+`AGENTS.md`, `CLAUDE.md` or `.cursorrules` file, the first one found is added to the
+system prompt.
+
 ## Desktop app
 
 <img src="docs/desktop.jpg" alt="The Vesper desktop app showing a file edit with its diff" width="720">
 
 The desktop app does the same work with a window around it. Open a folder from the
 top bar, and every tool call shows up inline: what the agent read, what it searched, and
-a colored diff with Allow, Always allow and Deny before any change.
+a colored diff with Allow, Always allow and Deny before any change. When the agent moves
+to another folder, the top bar follows it.
 
 It also has a Docs mode for a fixed set of documents: drop in PDFs, Markdown or text files
 and get streamed answers with clickable page citations. Docs mode is where Vesper started,
@@ -139,8 +176,13 @@ Start it with `vesper app`, from Launchpad or the Start menu, or with `vesper-ap
 | OpenAI, Anthropic Claude, Google Gemini, DeepSeek, Mistral, Groq, OpenRouter, xAI Grok, Together AI, Fireworks AI, Cerebras, NVIDIA NIM, Hugging Face, Moonshot Kimi | Ollama, LM Studio, any OpenAI-compatible server |
 
 Pick one with `/model`, or once with `--model provider/model`, for example
-`--model anthropic/claude-sonnet-4-5` or `--model ollama/qwen2.5:7b-instruct`.
-The model needs tool calling. With Ollama, `qwen2.5:7b-instruct` and `llama3.1:8b` work well.
+`--model anthropic/claude-sonnet-5-5` or `--model ollama/qwen2.5:7b-instruct`.
+The model needs tool calling. Larger models make better agents: a 7B local model handles
+reading, searching and small edits, and a hosted model is the better choice for long tasks.
+
+With Ollama, Vesper asks for a 16,384-token context window, because Ollama's default of
+4,096 is too small for an agent. Set `VESPER_OLLAMA_CTX` to change it (more context needs
+more memory).
 
 Document search uses embeddings that run on your computer, so indexing PDFs needs no key
 and sends nothing anywhere.
@@ -149,14 +191,20 @@ and sends nothing anywhere.
 
 An agent that can edit files and run commands should be boring about permissions. Vesper is:
 
-- **It stays in the folder.** Every path is resolved and checked against the folder you
-  opened. `..`, absolute paths and symlinks that point outside are refused.
 - **It asks first.** In `ask` mode (the default) every edit shows a diff and every command
   shows the exact command line, and nothing happens until you say yes. `auto-edit` lets it
-  edit files but still asks before commands. `yolo` never asks; use it only in a folder you
-  can afford to lose, such as a fresh git checkout.
-- **It asks before trusting a folder.** The first time you run `vesper` somewhere, it asks
-  whether you trust that folder.
+  edit files but still asks before commands. `yolo` never asks; use it only when you can
+  afford to lose the files it can reach.
+- **Some things always ask.** Commands that can wipe a disk or a home folder (`rm -rf /`,
+  `mkfs`, `dd` to a device, `shutdown`) and edits inside credential folders (`~/.ssh`,
+  `~/.aws`, `~/.gnupg` and similar) need a yes every time, in every mode, and "always
+  allow" does not cover them.
+- **Secrets are not read.** Private keys, `.pem` and `.key` files, `.netrc`, `credentials`
+  files and Vesper's own key file are never read into a conversation.
+- **Reading is not restricted.** Like a shell, Vesper can read and search any folder your
+  user can. The first time you start it somewhere, it says so and asks whether to continue.
+- **Ctrl+C stops everything.** It ends the answer, kills any command the agent started,
+  and no further tool runs until your next message.
 - **File contents are data.** The system prompt tells the model to treat what it reads as
   data, never as instructions. That lowers the risk of prompt injection from a hostile
   file, but no model is immune, which is why the approval prompt exists.
@@ -176,18 +224,23 @@ Found a security problem? Please report it privately, see [SECURITY.md](SECURITY
           └──────────────── coder.Session ─────────────────────────────┘
                                  │  LangGraph create_agent loop
                                  ▼
-               workspace.Workspace: list_files, read_file, glob, grep,
-               search_docs, write_file, edit_file, run_command
+               workspace.Workspace: list_files, read_file, glob, grep, search_docs,
+               change_directory, write_file, edit_file, run_command
+                                 │
+                                 ▼
+               store.Store: ~/.vesper/vesper.db (sessions, messages, events)
 ```
 
 | Path | What it is |
 |---|---|
-| `src/vesper/workspace.py` | The folder tools, path checks and approval gate |
-| `src/vesper/coder.py` | The agent loop and its event stream, shared by both front ends |
-| `src/vesper/tui.py` | The `vesper` terminal app |
+| `src/vesper/prompts.py` | Every prompt sent to a model, including the agent's system prompt |
+| `src/vesper/workspace.py` | The agent's tools and the approval gate |
+| `src/vesper/coder.py` | The agent loop, context trimming and the event stream shared by both front ends |
+| `src/vesper/store.py` | Saved sessions and the activity log (SQLite) |
+| `src/vesper/tui.py`, `ui.py`, `onboarding.py` | The `vesper` terminal app: session loop, rendering, first-run setup |
 | `src/vesper/server.py` | The desktop engine API |
 | `src/vesper/providers.py` | Every model provider and the local embeddings |
-| `src/vesper/indexing.py`, `graph.py`, `agent.py` | Docs mode: the course's RAG pipeline in LangChain and LangGraph |
+| `src/vesper/indexing.py`, `graph.py`, `agent.py` | Docs mode: a retrieval pipeline in LangChain and LangGraph |
 | `apps/web/` | React interface (Vite + TypeScript) |
 | `apps/desktop/` | Electron shell and packaging |
 
@@ -215,11 +268,12 @@ VESPER_PORT=8765 VESPER_TOKEN=devtoken vesper-app --serve
 npm --prefix apps/web run dev               # open http://localhost:5173/#token=devtoken
 ```
 
-The course commands still work: `vesper ask`, `vesper agent`, `vesper chat` and
-`vesper eval` (also available as `rag-lab`). `vesper eval` scores `eval/questions.yaml`,
-so you can compare chunk sizes, `k` and models with numbers.
+Document question answering also works from the command line: `vesper ask`, `vesper agent`,
+`vesper chat` and `vesper eval` (also available as `rag-lab`). They use the provider and
+model you picked in Vesper unless you pass `--llm`. `vesper eval` scores
+`eval/questions.yaml`, so you can compare chunk sizes, `k` and models with numbers.
 
-Releases: push a tag such as `v0.4.0` and GitHub Actions builds, smoke-tests and publishes
+Releases: push a tag such as `v0.5.0` and GitHub Actions builds, smoke-tests and publishes
 macOS, Linux and Windows builds with checksums.
 
 ## Contributing

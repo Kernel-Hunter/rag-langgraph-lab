@@ -390,6 +390,12 @@ export async function send(text: string): Promise<void> {
         case 'error':
           patchMessage(cid, bot.id, () => ({ error: e.data.message }))
           break
+        case 'cwd': // the agent moved to another folder: show it in the top bar
+          void refresh()
+          break
+        case 'notice':
+          toast(e.data.text)
+          break
         default:
           break
       }

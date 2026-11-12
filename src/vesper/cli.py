@@ -1,6 +1,10 @@
-"""Command line entry point: `rag-lab --help`."""
+"""Document question answering from the command line: `vesper ask | agent | chat | eval`.
+
+Without `--llm`, the provider and model chosen in Vesper (`~/.vesper/config.json`) are used.
+"""
 
 import argparse
+import os
 import sys
 
 from vesper.indexing import index
@@ -13,7 +17,8 @@ def _common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--chunk-overlap", type=int, default=100)
     p.add_argument("-k", type=int, default=3, help="chunks to retrieve")
     p.add_argument("--store", choices=["memory", "chroma"], default="memory")
-    p.add_argument("--llm", help="override LLM_PROVIDER, e.g. openai, anthropic, google, deepseek, groq, openrouter, ollama")
+    p.add_argument("--llm", help="provider: openai, anthropic, google, deepseek, groq, openrouter, ollama... (default: the one chosen in Vesper)")
+    p.add_argument("--model", help="model id (default: the provider's saved or default model)")
     p.add_argument("--embeddings", help="override EMBEDDINGS_PROVIDER: local (free, default), openai, google, mistral, ollama, fake")
 
 
@@ -25,7 +30,17 @@ def _setup(args):
         chunk_overlap=args.chunk_overlap,
         store=args.store,
     )
-    return vector_store, get_llm(args.llm)
+    return vector_store, get_llm(*_chat_model(args))
+
+
+def _chat_model(args) -> tuple[str | None, str | None]:
+    """--llm and --model win, then LLM_PROVIDER, then what the user picked in Vesper."""
+    from vesper.onboarding import load_config
+
+    cfg = load_config()
+    provider = args.llm or os.getenv("LLM_PROVIDER") or cfg.get("provider") or None
+    model = args.model or (cfg.get("model") if provider == cfg.get("provider") and not os.getenv("LLM_MODEL") else None)
+    return provider, model or None
 
 
 def _graph_asker(args, vector_store, llm):
@@ -52,22 +67,22 @@ def _print_result(result: dict) -> None:
     print(result["answer"])
     if "supported" in result:
         print(f"\nsupported by context: {'yes' if result['supported'] else 'no'}")
-    for d in result.get("context", []):  # always look!
+    for d in result.get("context", []):  # the chunks the answer was built from
         print("page", d.metadata.get("page"), d.page_content[:80].replace("\n", " "))
     for q in result.get("searches", []):
         print("searched:", q)
 
 
-def main(argv: list[str] | None = None) -> None:
+def main(argv: list[str] | None = None) -> int:
     # Windows consoles and redirected output may default to cp1252; answers can hold any Unicode.
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")
     from dotenv import load_dotenv
 
-    load_dotenv()  # the lab commands read keys from the repo's .env
+    load_dotenv(os.path.join(os.getcwd(), ".env"))  # these commands also read a .env in the current folder
 
-    parser = argparse.ArgumentParser(prog="rag-lab", description="Chapter 5B RAG lab")
+    parser = argparse.ArgumentParser(prog="rag-lab", description="Question answering over documents, with page citations")
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_ask = sub.add_parser("ask", help="ask one question through the fixed 2-step graph")
@@ -93,6 +108,22 @@ def main(argv: list[str] | None = None) -> None:
     _common(p_eval)
 
     args = parser.parse_args(argv)
+    try:
+        return _run(args) or 0
+    except KeyboardInterrupt:
+        return 130
+    except Exception as exc:  # noqa: BLE001 - a short message instead of a traceback
+        from vesper.server import friendly_error
+
+        provider = _chat_model(args)[0] or "openai"
+        message = friendly_error(exc, provider)
+        message = message.replace("Open Settings and paste a valid key.", "Run `vesper`, then /key, or pick another provider with --llm.")
+        message = message.replace("Pick another one in the model menu.", "Pick another one with --model.")
+        print(f"Error: {message}", file=sys.stderr)
+        return 1
+
+
+def _run(args) -> None:
     vector_store, llm = _setup(args)
 
     if args.command == "ask":
@@ -118,4 +149,4 @@ def main(argv: list[str] | None = None) -> None:
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

@@ -38,9 +38,10 @@ MODELS = Path(MODEL_HOME) / "models-flat"
 shutil.copytree(Path(MODEL_HOME) / "models", MODELS, symlinks=False, ignore=shutil.ignore_patterns("blobs"))
 
 # Imported lazily or loaded by name, so PyInstaller cannot see them on its own.
-SUBMODULES = ["langchain_openai", "langchain_anthropic", "tiktoken_ext", "uvicorn"]
+SUBMODULES = ["langchain_openai", "langchain_anthropic", "langchain_ollama", "ollama", "tiktoken_ext", "uvicorn"]
 COLLECT_ALL = ["fastembed"]
-METADATA = ["langchain", "langchain-core", "langchain-openai", "langchain-anthropic", "anthropic",
+METADATA = ["langchain", "langchain-core", "langchain-openai", "langchain-anthropic", "langchain-ollama",
+            "ollama", "anthropic",
             "langchain-text-splitters", "langgraph", "langsmith", "openai", "tiktoken", "fastembed",
             "fastapi", "uvicorn", "huggingface-hub", "tokenizers", "onnxruntime"]
 # The Electron shell draws the window now, so the pywebview stack stays out.

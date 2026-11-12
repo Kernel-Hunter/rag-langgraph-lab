@@ -1,7 +1,7 @@
 [project]
 name = "vesper-agent"
-version = "0.4.2"
-description = "Vesper: an open source AI agent for your terminal and desktop. It reads, searches and edits the files in any folder and answers from your documents with page citations. Built on LangChain and LangGraph, works with 17 model providers or fully offline."
+version = "0.5.0"
+description = "Vesper: an open source AI coding agent for your terminal and desktop. It reads, searches and edits files, runs commands with your approval, moves between projects, and saves every session in SQLite. Built on LangChain and LangGraph, works with 17 model providers or fully offline."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -9,6 +9,7 @@ dependencies = [
     "langchain-core>=1.0",
     "langchain-openai>=1.0",
     "langchain-anthropic>=1.0",
+    "langchain-ollama>=1.0",
     "langchain-text-splitters>=1.0",
     "langgraph>=1.0",
     "numpy>=1.26",

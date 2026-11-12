@@ -1,4 +1,3 @@
-"""Vesper: an AI agent for your terminal and desktop, built on the Chapter 5B RAG lab
-(LangChain and LangGraph)."""
+"""Vesper: an AI coding agent for your terminal and desktop, built on LangChain and LangGraph."""
 
-__version__ = "0.4.2"
+__version__ = "0.5.0"

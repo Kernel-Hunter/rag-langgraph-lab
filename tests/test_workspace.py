@@ -29,21 +29,98 @@ def tools(ws):
 
 
 # ---------------------------------------------------------------- paths
-@pytest.mark.parametrize("path", ["..", "../x", "/etc/passwd", "~/.ssh/id_rsa", "src/../../x"])
-def test_paths_outside_are_refused(ws, path):
-    out = tools(ws)["read_file"].invoke({"path": path})
-    assert out.startswith("Error:") and "outside the workspace" in out
-
-
-def test_symlink_escape_refused(ws, tmp_path_factory):
+def test_paths_are_not_confined_to_the_working_directory(ws, tmp_path_factory):
     outside = tmp_path_factory.mktemp("outside")
-    (outside / "secret.txt").write_text("secret")
-    try:
-        os.symlink(outside / "secret.txt", ws.root / "link.txt")
-    except (OSError, NotImplementedError):
-        pytest.skip("symlinks not available")
-    out = tools(ws)["read_file"].invoke({"path": "link.txt"})
-    assert out.startswith("Error:") and "secret" not in out.split("outside")[0].replace("link.txt", "")
+    (outside / "other.txt").write_text("elsewhere\n")
+    assert "elsewhere" in ws.read_file(str(outside / "other.txt"))        # absolute
+    assert ws.resolve("~") == ws.resolve(os.path.expanduser("~"))          # home
+    assert ws.resolve("src/../notes.md") == ws.root / "notes.md"           # relative to the working directory
+    assert "other.txt" in ws.list_files(str(outside))
+    assert ws.rel(ws.root / "src" / "app.py") == "src/app.py" and ws.rel(outside) == str(outside)
+
+
+@pytest.mark.parametrize("name", ["id_rsa", "server.pem", "cert.key", ".netrc", "credentials"])
+def test_secret_files_are_never_read(ws, name):
+    (ws.root / name).write_text("TOP SECRET")
+    out = tools(ws)["read_file"].invoke({"path": name})
+    assert out.startswith("Error:") and "TOP SECRET" not in out
+
+
+def test_change_directory_moves_every_tool(ws, tmp_path_factory):
+    other = tmp_path_factory.mktemp("other")
+    (other / "there.txt").write_text("x\n")
+    moved = []
+    ws.on_cwd = moved.append
+    out = tools(ws)["change_directory"].invoke({"path": str(other)})
+    assert "Working directory is now" in out and "there.txt" in out
+    assert ws.root == other.resolve() and moved == [other.resolve()]
+    assert "there.txt" in ws.list_files(".")
+    assert "exit code 0" in ws.run_command("ls") and "there.txt" in ws.run_command("ls")
+    assert tools(ws)["change_directory"].invoke({"path": "nope"}).startswith("Error:")
+    assert tools(ws)["change_directory"].invoke({"path": "there.txt"}).startswith("Error:")
+    start = ws.root
+    ws.run_command("cd ..")  # a bare cd lasts, like in a shell
+    assert ws.root == start.parent
+
+
+def test_dangerous_commands_and_credential_edits_always_ask(tmp_path, monkeypatch):
+    asked = []
+
+    def approve(action):
+        asked.append(action)
+        return "no"
+
+    w = Workspace(tmp_path, approve=approve, mode="yolo")
+    for command in ("rm -rf /", "rm -rf ~", "sudo shutdown now", "dd if=/dev/zero of=/dev/disk2"):
+        assert tools(w)["run_command"].invoke({"command": command}).startswith("Error:")
+    assert len(asked) == 4 and all(a["strict"] for a in asked)
+    assert "exit code 0" in w.run_command("echo fine")  # ordinary commands still run freely in yolo
+    # A stand-in home folder. Absolute paths only: `~` must never reach the real home in a test.
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    target = tmp_path / ".ssh" / "config"
+    target.parent.mkdir()
+    assert tools(w)["write_file"].invoke({"path": str(target), "content": "x"}).startswith("Error:")
+    assert asked[-1]["strict"] and not target.exists()
+    w.approve = lambda a: "always"
+    w.mode = "ask"
+    w.write_file(str(tmp_path / ".ssh" / "config"), "x")
+    assert "edit" not in w.always  # "always" never covers a strict action
+
+
+def test_auto_approved_actions_are_reported(tmp_path):
+    seen = []
+    w = Workspace(tmp_path, mode="auto-edit", on_auto=seen.append)
+    w.write_file("a.txt", "hello\n")
+    assert seen and seen[0]["kind"] == "edit" and "+hello" in seen[0]["diff"]
+
+
+def test_run_command_streams_output_and_can_be_cancelled(tmp_path):
+    import threading
+    import time
+
+    lines = []
+    w = Workspace(tmp_path, mode="yolo", on_output=lines.append)
+    assert "exit code 0" in w.run_command("echo one && echo two")
+    assert lines == ["one", "two"]
+    if os.name != "posix":
+        return
+    threading.Timer(0.3, w.cancel).start()
+    started = time.monotonic()
+    out = tools(w)["run_command"].invoke({"command": "sleep 30", "timeout": 60})
+    assert time.monotonic() - started < 10 and "stopped" in out
+    w.stopped = False
+    assert "did not finish within 1 s" in w.run_command("sleep 5", timeout=1)
+
+
+def test_glob_takes_a_folder_and_grep_has_a_budget(ws, tmp_path_factory, monkeypatch):
+    other = tmp_path_factory.mktemp("lib")
+    (other / "deep").mkdir()
+    (other / "deep" / "mod.py").write_text("needle = 1\n")
+    assert "deep/mod.py" in ws.glob("**/*.py", str(other)).replace("\\", "/")
+    monkeypatch.setattr("vesper.workspace.MAX_SCAN_FILES", 1)
+    for i in range(5):
+        (other / f"f{i}.txt").write_text("nothing\n")
+    assert "stopped after" in ws.grep("zzz", str(other))
 
 
 # ---------------------------------------------------------------- read side
@@ -245,3 +322,12 @@ def test_print_mode_with_fresh_home_and_piped_input(tmp_path, monkeypatch, capsy
     out = capsys.readouterr()
     assert "Let me look at the folder first." in out.out and "List" in out.err
     assert not (tmp_path / "vesper-notes.md").exists()  # ask mode with nobody to answer: refused
+
+
+def test_stopped_workspace_refuses_tools_until_the_next_turn(ws):
+    ws.cancel()
+    assert "stopped" in tools(ws)["read_file"].invoke({"path": "notes.md"})
+    assert "stopped" in tools(ws)["run_command"].invoke({"command": "echo hi"})
+    llm = ToolFake(disable_streaming=True, messages=iter([AIMessage(content="hello")]))
+    list(Session(llm, ws).ask("hi"))  # a new turn clears it
+    assert "Two absences" in tools(ws)["read_file"].invoke({"path": "notes.md"})

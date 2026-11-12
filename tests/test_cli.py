@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def _fake_llm(monkeypatch, responses):
-    monkeypatch.setattr(cli, "get_llm", lambda provider=None: FakeListChatModel(responses=responses))
+    monkeypatch.setattr(cli, "get_llm", lambda provider=None, model=None: FakeListChatModel(responses=responses))
 
 
 def test_cli_ask_prints_answer_and_pages(monkeypatch, capsys):

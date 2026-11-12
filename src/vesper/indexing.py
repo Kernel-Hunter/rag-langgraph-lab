@@ -1,4 +1,4 @@
-"""Code 1 of 3: indexing (load, split, embed, store). Slide 5."""
+"""Indexing documents for search: load, split, embed, store."""
 
 import re
 from pathlib import Path
@@ -90,7 +90,7 @@ def build_vector_store(chunks: list[Document], embeddings, store: str = "memory"
         from langchain_chroma import Chroma  # pip install -e ".[chroma]"
 
         vector_store = Chroma(
-            collection_name="handbook",
+            collection_name="documents",
             embedding_function=embeddings,
             persist_directory=persist_dir,
         )

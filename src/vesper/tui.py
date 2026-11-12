@@ -1,377 +1,361 @@
 """Vesper in the terminal.
 
-    vesper                      start an agent session in the current folder
+    vesper                      start a session in the current folder
+    vesper -c                   continue the last conversation in this folder
+    vesper -r [ID]              resume a conversation (pick from a list, or give its id)
     vesper "question"           ask once and print the answer (no prompts; edits are refused)
+    vesper sessions             list saved conversations
+    vesper logs [ID]            show what the agent did in a conversation
     vesper app                  open the desktop app
-    vesper ask|agent|chat|eval  the Chapter 5B lab commands (same as `rag-lab`)
+    vesper ask|agent|chat|eval  document question answering from the command line
 
 Inside a session: type a request, `/` for commands, `@path` to attach a file, `!cmd` to run
 a shell command yourself, Shift+Tab to change how much Vesper may do without asking.
+
+This file is the session loop. Looks live in `ui.py`, setup questions in `onboarding.py`,
+the agent in `coder.py`, its tools in `workspace.py`, saved history in `store.py`.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
+import queue
 import re
+import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
 from rich import box
-from rich.console import Console, Group
-from rich.live import Live
-from rich.markdown import Markdown
+from rich.console import Group
 from rich.panel import Panel
-from rich.spinner import Spinner
-from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
 
 from vesper import __version__
+from vesper.onboarding import (
+    ask_key,
+    first_run,
+    home,
+    load_config,
+    open_app,
+    pick_model,
+    provider_ready,
+    save_config,
+    trust_folder,
+)
+from vesper.ui import (
+    ACCENT,
+    ACCENT_2,
+    AUTO_DIFF_LINES,
+    ERR,
+    MODES,
+    MUTED,
+    OK,
+    TOOL_LABELS,
+    WARN,
+    Renderer,
+    banner,
+    console,
+    diff_panel,
+    err_console,
+    error_panel,
+    fmt_tokens,
+    model_label,
+    note,
+    print_events,
+    recap,
+    sessions_table,
+    short_path,
+    summarize_args,
+    summarize_output,
+    tail_path,
+    tool_end_line,
+    tool_start_line,
+    turn_footer,
+)
 
-ACCENT = "#8b7cff"
-ACCENT_2 = "#2dd4bf"
-MUTED = "grey58"
-OK = "#34d399"
-ERR = "#f87171"
-WARN = "#fbbf24"
+__all__ = ["main", "App", "console", "banner", "TOOL_LABELS", "summarize_args", "summarize_output",
+           "ACCENT", "MUTED", "OK", "ERR", "WARN", "load_config"]
 
-MODES = {
-    "ask": "asks before edits and commands",
-    "auto-edit": "edits files freely, asks before commands",
-    "yolo": "never asks (careful)",
-}
-TOOL_LABELS = {
-    "list_files": "List", "read_file": "Read", "glob": "Find", "grep": "Search",
-    "search_docs": "Search docs", "write_file": "Write", "edit_file": "Edit", "run_command": "Run",
-}
 SLASH = {
     "/help": "show commands and shortcuts",
+    "/cd": "go to another folder: /cd ../other-project",
+    "/new": "start a new conversation (the old one is saved)",
+    "/resume": "go back to an earlier conversation",
+    "/sessions": "list saved conversations",
+    "/logs": "what the agent did in this conversation (/logs full for details)",
+    "/verbose": "show full tool output while working (ctrl+o)",
+    "/status": "model, folder, session and token use",
     "/model": "switch provider and model",
     "/key": "set the API key for the current provider",
     "/mode": "ask | auto-edit | yolo",
-    "/clear": "start a new conversation",
     "/docs": "re-read documents for search_docs",
     "/app": "open the desktop app",
-    "/exit": "quit (or Ctrl+D)",
+    "/exit": "quit (or ctrl+d)",
 }
+ALIASES = {"/clear": "/new", "/quit": "/exit", "/q": "/exit", "/history": "/sessions", "/log": "/logs"}
+SHORTCUTS = [
+    ("@path", "attach a file to your message"),
+    ("!command", "run a shell command yourself (!cd folder moves Vesper too)"),
+    ("shift+tab", "cycle mode: ask → auto-edit → yolo"),
+    ("ctrl+o", "show or hide full tool output"),
+    ("esc then enter", "new line"),
+    ("ctrl+c", "stop the answer · twice to quit"),
+    ("↑ ↓", "previous messages"),
+]
 MAX_MENTION_CHARS = 60_000
 MAX_PIPED_CHARS = 200_000  # text piped into one-shot mode
-
-console = Console(highlight=False)
-err_console = Console(stderr=True, highlight=False)
+MENTION = re.compile(r"(?<![\w/])@([\w./~\-]+)")
 
 
-# ---------------------------------------------------------------- config shared with the desktop app
-def _home() -> Path:
-    from vesper import providers as prov
-
-    return prov.HOME
-
-
-def load_config() -> dict:
-    try:
-        data = json.loads((_home() / "config.json").read_text())
-        return data if isinstance(data, dict) else {}
-    except (OSError, ValueError):
-        return {}
-
-
-def save_config(patch: dict) -> None:
-    home = _home()
-    home.mkdir(parents=True, exist_ok=True)
-    data = {**load_config(), **patch}
-    tmp = home / "config.json.tmp"
-    tmp.write_text(json.dumps(data, indent=2))
-    os.replace(tmp, home / "config.json")
-
-
-def ollama_running() -> bool:
-    import urllib.request
+def open_store():
+    """The session database, or None when it cannot be opened (Vesper still works, without history)."""
+    from vesper.store import Store
 
     try:
-        with urllib.request.urlopen("http://localhost:11434/api/tags", timeout=0.6):
-            return True
-    except Exception:
-        return False
+        return Store()
+    except Exception as exc:  # noqa: BLE001
+        err_console.print(f"Session history is off: cannot open {home() / 'vesper.db'} ({exc}).", style=WARN)
+        return None
 
 
-def provider_ready(pid: str) -> bool:
+def make_llm(cfg: dict):
     from vesper import providers as prov
 
-    p = prov.PROVIDERS.get(pid)
-    if p is None:
-        return False
-    if prov.fake_llm_enabled():
-        return True
-    if p.id == "ollama":
-        return ollama_running()
-    if p.local:
-        return True
-    if p.id == "custom":
-        return bool(os.getenv("CUSTOM_BASE_URL"))
-    return bool(prov._key(p))
+    return prov.get_llm(cfg.get("provider"), cfg.get("model") or None)
 
 
-# ---------------------------------------------------------------- small UI helpers
-def gradient(text: str, start: str = ACCENT, end: str = ACCENT_2) -> Text:
-    def rgb(h):
-        return tuple(int(h[i:i + 2], 16) for i in (1, 3, 5))
-
-    a, b = rgb(start), rgb(end)
-    out = Text()
-    n = max(1, len(text) - 1)
-    for i, ch in enumerate(text):
-        t = i / n
-        c = tuple(round(a[j] + (b[j] - a[j]) * t) for j in range(3))
-        out.append(ch, style=f"bold #{c[0]:02x}{c[1]:02x}{c[2]:02x}")
-    return out
-
-
-def short_path(p: Path) -> str:
-    home = Path.home()
-    if p == home:
-        return "~"
-    try:
-        return "~/" + p.relative_to(home).as_posix()
-    except ValueError:
-        return str(p)
-
-
-def model_label(cfg: dict) -> str:
+def context_tokens(cfg: dict) -> int:
     from vesper import providers as prov
 
-    p = prov.PROVIDERS.get(cfg.get("provider", ""))
-    if p is None:
-        return "no model"
-    return f"{p.label} · {cfg.get('model') or p.chat_model}"
+    return prov.context_tokens(cfg.get("provider"))
 
 
-def banner(root: Path, cfg: dict, mode: str) -> None:
-    title = Text.assemble(("✦ ", f"bold {ACCENT}"), gradient("Vesper"), (f"  v{__version__}", MUTED))
-    rows = Table.grid(padding=(0, 2))
-    rows.add_column(style=MUTED, justify="right")
-    rows.add_column()
-    rows.add_row("model", model_label(cfg))
-    rows.add_row("folder", short_path(root))
-    rows.add_row("mode", f"{mode} · {MODES[mode]}")
-    tips = Text.assemble(
-        ("Ask anything about this folder.  ", ""), ("/", f"bold {ACCENT}"), (" commands  ", MUTED),
-        ("@file", f"bold {ACCENT}"), (" attach  ", MUTED), ("!cmd", f"bold {ACCENT}"), (" shell  ", MUTED),
-        ("shift+tab", f"bold {ACCENT}"), (" mode", MUTED),
-    )
-    console.print(Panel(Group(title, Text(""), rows, Text(""), tips), box=box.ROUNDED,
-                        border_style=ACCENT, padding=(1, 2), expand=False))
+def friendly(exc: BaseException, cfg: dict) -> str:
+    from vesper.server import friendly_error
 
-
-def error_panel(message: str, hint: str = "") -> None:
-    body = Text(message)
-    if hint:
-        body.append("\n" + hint, style=MUTED)
-    console.print(Panel(body, title="error", title_align="left", border_style=ERR, box=box.ROUNDED, expand=False))
-
-
-def summarize_args(name: str, args: dict) -> str:
-    key = {"read_file": "path", "write_file": "path", "edit_file": "path", "list_files": "path",
-           "glob": "pattern", "grep": "pattern", "search_docs": "query", "run_command": "command"}.get(name)
-    value = str(args.get(key, "")) if key else ""
-    if name == "grep" and args.get("path") not in (None, "", "."):
-        value += f"  in {args['path']}"
-    value = value.replace("\n", " ")
-    return value if len(value) <= 90 else value[:87] + "…"
-
-
-def summarize_output(name: str, output: str, ok: bool) -> Text:
-    if not ok:
-        first = output.removeprefix("Error:").strip().splitlines()[0] if output.strip() else "failed"
-        return Text(first[:200], style=ERR)
-    lines = output.splitlines()
-    if name == "read_file":
-        pages = sum(1 for line in lines if line.startswith("[page "))
-        if pages:
-            return Text(f"{pages} page{'s' if pages != 1 else ''}", style=MUTED)
-        n = sum(1 for line in lines if re.match(r"^\s*\d+\t", line))
-        return Text(f"{n} line{'s' if n != 1 else ''}" if n else (lines[0][:120] if lines else ""), style=MUTED)
-    if name in ("glob", "grep"):
-        n = 0 if output.startswith("No ") else len([line for line in lines if not line.startswith("...")])
-        return Text(f"{n} result{'s' if n != 1 else ''}", style=MUTED)
-    if name == "list_files":
-        return Text(f"{max(0, len(lines) - 1)} entries", style=MUTED)
-    if name == "search_docs":
-        n = output.count("\n\n") + 1 if output.startswith("[") else 0
-        return Text(f"{n} passage{'s' if n != 1 else ''}" if n else output[:120], style=MUTED)
-    if name == "run_command":
-        head = lines[0] if lines else ""
-        rest = [line for line in lines[1:] if line.strip()][:6]
-        t = Text(head, style=OK if head.startswith("exit code 0") else WARN)
-        for line in rest:
-            t.append("\n     " + line[:160], style=MUTED)
-        if len(lines) > 7:
-            t.append(f"\n     … {len(lines) - 7} more lines", style=MUTED)
-        return t
-    return Text(lines[0][:200] if lines else "done", style=MUTED)
-
-
-# ---------------------------------------------------------------- streaming renderer
-def _last_block_end(text: str) -> int:
-    """Index just after the last blank line that is not inside a ``` fence, or 0."""
-    end = 0
-    inside = False
-    pos = 0
-    for line in text.splitlines(keepends=True):
-        pos += len(line)
-        if line.lstrip().startswith("```"):
-            inside = not inside
-            continue
-        if not inside and not line.strip() and pos < len(text):
-            end = pos
-    return end
-
-
-class Renderer:
-    """Streams Markdown: finished blocks are printed for good, the open block stays live."""
-
-    def __init__(self) -> None:
-        self.buffer = ""
-        self.live: Live | None = None
-        self.status = "Thinking"
-
-    def _renderable(self):
-        if self.buffer.strip():
-            return Markdown(self.buffer)
-        return Spinner("dots", text=Text(f"{self.status}…", style=MUTED), style=ACCENT)
-
-    def start(self, status: str | None = None) -> None:
-        if status:
-            self.status = status
-        if self.live is None:
-            self.live = Live(self._renderable(), console=console, refresh_per_second=12, transient=True,
-                             vertical_overflow="crop")
-            self.live.start()
-        else:
-            self.live.update(self._renderable())
-
-    def token(self, text: str) -> None:
-        self.buffer += text
-        cut = _last_block_end(self.buffer)
-        if cut > 0:
-            done, self.buffer = self.buffer[:cut], self.buffer[cut:]
-            if done.strip():
-                console.print(Markdown(done))
-        self.start()
-
-    def flush(self) -> None:
-        text, self.buffer = self.buffer, ""
-        self.stop()
-        if text.strip():
-            console.print(Markdown(text))
-
-    def stop(self) -> None:
-        if self.live is not None:
-            self.live.stop()
-            self.live = None
+    msg = friendly_error(exc, cfg.get("provider", ""))
+    msg = msg.replace("Open Settings and paste a valid key", "Run /key to paste a valid key")
+    return msg.replace("Pick another one in the model menu", "Run /model to pick another one")
 
 
 # ---------------------------------------------------------------- the session
 class App:
-    def __init__(self, root: Path, mode: str, cfg: dict) -> None:
-        self.root = root
+    """One terminal session. The agent runs in a worker thread; this thread draws and asks."""
+
+    def __init__(self, root: Path, mode: str, cfg: dict, store=None) -> None:
         self.cfg = cfg
         self.mode = mode
+        self.store = store
+        self.verbose = bool(cfg.get("verbose"))
         self.renderer = Renderer()
         self.workspace = None
         self.session = None
+        self._start_root = root
+        self._events: queue.Queue = queue.Queue()
+        self._stop = threading.Event()
+        self._worker: threading.Thread | None = None
+        self._shown_cwd = root
 
-    def build(self) -> None:
+    @property
+    def root(self) -> Path:
+        return self.workspace.root if self.workspace is not None else self._start_root
+
+    def build(self, resume: dict | None = None) -> None:
         from vesper import providers as prov
-        from vesper.coder import Session
         from vesper.workspace import Workspace
 
         emb = self.cfg.get("embeddings") or "local"
 
         def embeddings():
-            self.renderer.start("Reading the documents in this folder (first search only)")
+            self._events.put(("status", {"text": "Reading the documents in this folder (first search only)"}))
             return prov.get_embeddings(emb)
 
-        self.workspace = Workspace(self.root, approve=self.approve, mode=self.mode, embeddings_factory=embeddings)
-        self.session = Session(self.llm(), self.workspace)
+        self.workspace = Workspace(
+            self._start_root, approve=self._approve_from_tool, mode=self.mode, embeddings_factory=embeddings,
+            on_auto=lambda action: self._events.put(("auto", action)),
+            on_output=lambda line: self._events.put(("output", {"line": line})),
+        )
+        self.new_session(resume)
 
-    def llm(self):
-        from vesper import providers as prov
+    def new_session(self, resume: dict | None = None) -> None:
+        from vesper.coder import Session
 
-        return prov.get_llm(self.cfg.get("provider"), self.cfg.get("model") or None)
+        self.session = Session(
+            make_llm(self.cfg), self.workspace, self.store, session_id=resume["id"] if resume else None,
+            source="terminal", provider=self.cfg.get("provider", ""), model=self.cfg.get("model", ""),
+            context_tokens=context_tokens(self.cfg),
+        )
 
-    # ----- approvals (called from inside a tool, while the answer is streaming) -----
+    # ----- approvals -----
+    def _approve_from_tool(self, action: dict) -> str:
+        """Called by a tool, in the agent's thread: hand the question to the main thread and wait."""
+        if self._stop.is_set():
+            return "no"
+        reply: queue.Queue = queue.Queue(maxsize=1)
+        self._events.put(("approval", {"action": action, "reply": reply}))
+        return reply.get()
+
     def approve(self, action: dict) -> str:
         self.renderer.stop()
+        strict = action.get("strict")
         if action["kind"] == "edit":
             title = ("Create " if action.get("new") else "Edit ") + action.get("path", "")
-            body = Syntax(action.get("diff") or "(no changes)", "diff", theme="ansi_dark", word_wrap=True)
+            console.print(diff_panel(action, title, ERR if strict else WARN))
         else:
-            title = "Run a command"
             body = Group(Text("$ " + action.get("command", ""), style="bold"),
-                         Text("in " + short_path(Path(action.get("cwd", self.root))), style=MUTED))
-        console.print(Panel(body, title=title, title_align="left", border_style=WARN, box=box.ROUNDED))
+                         Text("in " + short_path(action.get("cwd", self.root)), style=MUTED))
+            console.print(Panel(body, title="Run a command", title_align="left",
+                                border_style=ERR if strict else WARN, box=box.ROUNDED))
+        if strict:
+            note("This can do serious damage or touches credentials, so it needs a yes every time.", ERR)
         what = "edits" if action["kind"] == "edit" else "commands"
         try:
             while True:
-                console.print(Text.assemble(
-                    ("  Allow?  ", "bold"), ("y", f"bold {OK}"), (" yes  ", MUTED),
-                    ("a", f"bold {ACCENT}"), (f" always allow {what} this session  ", MUTED),
-                    ("n", f"bold {ERR}"), (" no  ", MUTED), ("[y] ", MUTED)), end="")
+                parts = [("  Allow?  ", "bold"), ("y", f"bold {OK}"), (" yes  ", MUTED)]
+                if not strict:
+                    parts += [("a", f"bold {ACCENT}"), (f" always allow {what} this session  ", MUTED)]
+                parts += [("n", f"bold {ERR}"), (" no  ", MUTED), ("[n] " if strict else "[y] ", MUTED)]
+                console.print(Text.assemble(*parts), end="")
                 answer = input().strip().lower()
-                if answer in ("", "y", "yes"):
+                if answer in ("y", "yes") or (answer == "" and not strict):
                     return "yes"
-                if answer in ("a", "always"):
+                if answer in ("a", "always") and not strict:
                     return "always"
-                if answer in ("n", "no"):
+                if answer in ("n", "no", ""):
                     return "no"
         except (KeyboardInterrupt, EOFError):
+            console.print()
             return "no"
         finally:
-            self.renderer.start("Working")
+            self.renderer.restart("Working")
 
     # ----- one turn -----
-    def run_turn(self, text: str) -> None:
+    def run_turn(self, text: str, shown: str | None = None) -> None:
+        self.wait_idle()
+        events = self._events = queue.Queue()
+        stop = self._stop = threading.Event()
+        session = self.session
+
+        def work() -> None:
+            gen = session.ask(text, shown=shown)
+            try:
+                for item in gen:
+                    if stop.is_set():
+                        break
+                    events.put(item)
+            except BaseException as exc:  # noqa: BLE001 - shown to the user by the main thread
+                events.put(("error", {"exc": exc}))
+            finally:
+                gen.close()
+                events.put(("end", {}))
+
+        self._worker = threading.Thread(target=work, daemon=True, name="vesper-turn")
+        self._worker.start()
         r = self.renderer
-        r.start("Thinking")
+        r.restart("Thinking")
         try:
-            for event, data in self.session.ask(text):
-                if event == "token":
-                    r.token(data["text"])
-                elif event == "tool_start":
-                    r.flush()
-                    label = TOOL_LABELS.get(data["name"], data["name"])
-                    console.print(Text.assemble(("● ", ACCENT), (label, "bold"),
-                                                ("  " + summarize_args(data["name"], data["args"]), MUTED)))
-                    r.start(label)
-                elif event == "tool_end":
-                    r.stop()
-                    console.print(Text("  ⎿  ", style=MUTED) + summarize_output(data["name"], data["output"], data["ok"]))
-                    r.start("Thinking")
-                elif event == "done":
-                    r.flush()
+            while True:
+                try:
+                    event, data = events.get(timeout=0.2)
+                except queue.Empty:
+                    continue
+                if event == "end":
+                    break
+                self.draw(event, data)
         except KeyboardInterrupt:
+            stop.set()
+            self.workspace.cancel()
             r.flush()
-            console.print(Text("  ⎿  Interrupted. Tell Vesper what to do instead.", style=WARN))
-        except Exception as exc:
-            r.flush()
-            self.show_error(exc)
+            note("⎿  Stopped. Tell Vesper what to do instead.", WARN)
         finally:
+            r.flush()
+
+    def draw(self, event: str, data: dict) -> None:
+        r = self.renderer
+        if event == "token":
+            r.token(data["text"])
+        elif event == "tool_start":
+            r.flush()
+            console.print(tool_start_line(data["name"], data["args"]))
+            r.restart(TOOL_LABELS.get(data["name"], data["name"]))
+        elif event == "tool_end":
             r.stop()
+            console.print(tool_end_line(data["name"], data["output"], data["ok"], data.get("ms"), self.verbose))
+            r.restart("Thinking")
+        elif event == "output":
+            r.output(data["line"])
+        elif event == "approval":
+            data["reply"].put(self.approve(data["action"]))
+        elif event == "auto":
+            if data["kind"] == "edit":  # the edit did not need a yes; still show what changed
+                r.stop()
+                title = ("Created " if data.get("new") else "Edited ") + data.get("path", "")
+                console.print(diff_panel(data, title, MUTED, None if self.verbose else AUTO_DIFF_LINES))
+                r.start()
+        elif event == "status":
+            r.restart(data["text"])
+        elif event == "cwd":
+            if Path(data["path"]) != self._shown_cwd:
+                self._shown_cwd = Path(data["path"])
+                r.stop()
+                note("→ now in " + tail_path(data["path"], 70), ACCENT_2)
+                r.start()
+        elif event == "notice":
+            r.stop()
+            note(data["text"], WARN)
+            r.start()
+        elif event == "usage":
+            r.flush()
+            console.print(turn_footer(data, self.session.context_tokens))
+        elif event == "error":
+            r.flush()
+            self.show_error(data["exc"])
 
-    def show_error(self, exc: Exception) -> None:
-        from vesper.server import friendly_error
+    def wait_idle(self) -> None:
+        """A stopped request may still be finishing its last model call; let it end first."""
+        worker = self._worker
+        if worker is None or not worker.is_alive():
+            return
+        with console.status(Text("Finishing the stopped request…", style=MUTED), spinner="dots", spinner_style=ACCENT):
+            while worker.is_alive():
+                try:
+                    event, data = self._events.get(timeout=0.2)
+                except queue.Empty:
+                    continue
+                if event == "approval":
+                    data["reply"].put("no")
 
-        msg = friendly_error(exc, self.cfg.get("provider", ""))
-        msg = msg.replace("Open Settings and paste a valid key", "Run /key to paste a valid key")
-        msg = msg.replace("Pick another one in the model menu", "Run /model to pick another one")
-        error_panel(msg, "/model switches provider or model · /key sets the API key")
+    def show_error(self, exc: BaseException) -> None:
+        error_panel(friendly(exc, self.cfg), "/model switches provider or model · /key sets the API key")
 
     # ----- input -----
+    def _complete_path(self, frag: str, only_dirs: bool = False):
+        """Entries that complete a path typed so far (relative to the working directory, absolute or ~)."""
+        from prompt_toolkit.completion import Completion
+
+        head, _, prefix = frag.rpartition("/")
+        head = head + "/" if "/" in frag else ""
+        try:
+            base = self.workspace.resolve(head or ".")
+            entries = sorted(base.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
+        except OSError:
+            return
+        shown = 0
+        for p in entries:
+            if not p.name.startswith(prefix) or (p.name.startswith(".") and not prefix.startswith(".")):
+                continue
+            if only_dirs and not p.is_dir():
+                continue
+            yield Completion(head + p.name + ("/" if p.is_dir() else ""), start_position=-len(frag))
+            shown += 1
+            if shown >= 200:
+                return
+
     def make_prompt(self):
         from prompt_toolkit import PromptSession
         from prompt_toolkit.completion import Completer, Completion
@@ -390,23 +374,13 @@ class App:
                         if cmd.startswith(text):
                             yield Completion(cmd, start_position=-len(text), display_meta=desc)
                     return
-                m = re.search(r"@([\w./\-]*)$", text)
-                if not m:
+                moving = re.match(r"^(/cd|!cd)\s+(\S*)$", text)
+                if moving:
+                    yield from app._complete_path(moving.group(2), only_dirs=True)
                     return
-                frag = m.group(1)
-                base = (app.root / frag).parent if "/" in frag else app.root
-                prefix = frag.rsplit("/", 1)[-1]
-                try:
-                    base = base.resolve()
-                    if base != app.root and app.root not in base.parents:
-                        return
-                    entries = sorted(base.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
-                except OSError:
-                    return
-                for p in entries[:200]:
-                    if p.name.startswith(prefix) and not p.name.startswith("."):
-                        rel = p.relative_to(app.root).as_posix() + ("/" if p.is_dir() else "")
-                        yield Completion(rel, start_position=-len(frag))
+                m = re.search(r"@([\w./~\-]*)$", text)
+                if m:
+                    yield from app._complete_path(m.group(1))
 
         kb = KeyBindings()
 
@@ -414,6 +388,11 @@ class App:
         def _(event):
             order = list(MODES)
             app.set_mode(order[(order.index(app.mode) + 1) % len(order)], quiet=True)
+            event.app.invalidate()
+
+        @kb.add("c-o")
+        def _(event):
+            app.set_verbose(not app.verbose, quiet=True)
             event.app.invalidate()
 
         @kb.add("escape", "enter")
@@ -424,15 +403,22 @@ class App:
         def _(event):
             event.current_buffer.insert_text("\n")
 
+        def esc(text: str) -> str:
+            return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
         def toolbar():
             color = {"ask": "ansigreen", "auto-edit": "ansiyellow", "yolo": "ansired"}[app.mode]
-            label = model_label(app.cfg).replace("&", "&amp;").replace("<", "&lt;")
-            return HTML(f" {label}  ·  <style fg='{color}'><b>{app.mode}</b></style>"
-                        f" <style fg='ansigray'>(shift+tab)</style>  ·  <style fg='ansigray'>/help</style>")
+            folder = tail_path(app.root, 34)
+            used = app.session.tokens["context"] if app.session else 0
+            ctx = f"  ·  context {min(100, round(100 * used / app.session.context_tokens))}%" if used else ""
+            loud = "  ·  <style fg='ansicyan'>verbose</style>" if app.verbose else ""
+            return HTML(f" <b>{esc(folder)}</b>  ·  {esc(model_label(app.cfg))}  ·  "
+                        f"<style fg='{color}'><b>{app.mode}</b></style> <style fg='ansigray'>(shift+tab)</style>"
+                        f"{ctx}{loud}  ·  <style fg='ansigray'>/help</style>")
 
         try:
-            _home().mkdir(parents=True, exist_ok=True)
-            history = FileHistory(str(_home() / "history"))
+            home().mkdir(parents=True, exist_ok=True)
+            history = FileHistory(str(home() / "history"))
         except OSError:
             history = InMemoryHistory()
         return PromptSession(
@@ -447,35 +433,134 @@ class App:
         if self.workspace is not None:
             self.workspace.mode = mode
             self.workspace.always.clear()
-        try:
-            save_config({"agent_mode": mode})
-        except OSError:
-            pass
+        self._remember({"agent_mode": mode})
         if not quiet:
             console.print(Text.assemble(("  mode: ", MUTED), (mode, "bold"), (f" · {MODES[mode]}", MUTED)))
 
+    def set_verbose(self, on: bool, quiet: bool = False) -> None:
+        self.verbose = on
+        self._remember({"verbose": on})
+        if not quiet:
+            note("verbose on: full tool output is shown." if on else "verbose off: tool output is summarized.")
+
+    @staticmethod
+    def _remember(patch: dict) -> None:
+        try:
+            save_config(patch)
+        except OSError:
+            pass
+
     def expand_mentions(self, text: str) -> str:
-        """`@path` attaches that file (read through the workspace, so it stays inside the folder)."""
+        """`@path` attaches that file to the message."""
+        from vesper.workspace import ToolError
+
         attached = []
-        for m in re.finditer(r"(?<![\w/])@([\w./\-]+)", text):
-            rel = m.group(1).rstrip(".,;:")
+        for m in MENTION.finditer(text):
+            ref = m.group(1).rstrip(".,;:")
             try:
-                p = self.workspace.resolve(rel)
-                if not p.is_file():
+                if not self.workspace.resolve(ref).is_file():
                     continue
-                body = self.workspace.read_file(rel, 1, 2000)
-            except Exception:
+                body = self.workspace.read_file(ref, 1, 2000)
+            except ToolError as exc:
+                note(f"⎿  {ref} not attached: {exc}", WARN)
                 continue
-            attached.append(f'<file path="{rel}">\n{body[:MAX_MENTION_CHARS]}\n</file>')
-            console.print(Text.assemble(("  ⎿  attached ", MUTED), (rel, ACCENT)))
+            except Exception:  # noqa: BLE001
+                continue
+            attached.append(f'<file path="{ref}">\n{body[:MAX_MENTION_CHARS]}\n</file>')
+            console.print(Text.assemble(("  ⎿  attached ", MUTED), (ref, ACCENT)))
         return text + ("\n\n" + "\n\n".join(attached) if attached else "")
+
+    # ----- moving around -----
+    def cd(self, target: str) -> None:
+        from vesper.workspace import ToolError
+
+        if not target.strip():
+            note(short_path(self.root))
+            return
+        try:
+            self.workspace.change_directory(target.strip())
+        except ToolError as exc:
+            note(str(exc), ERR)
+            return
+        self._shown_cwd = self.root
+        note("→ now in " + tail_path(self.root, 70), ACCENT_2)
+
+    # ----- history -----
+    def show_sessions(self) -> list[dict]:
+        rows = self.store.list_sessions(15) if self.store is not None else []
+        if not rows:
+            note("No saved conversations yet.")
+        else:
+            console.print(sessions_table(rows, self.session.id))
+        return rows
+
+    def resume(self, ref: str) -> None:
+        if self.store is None:
+            note("Session history is off.", WARN)
+            return
+        ref = ref.strip()
+        rows = self.store.list_sessions(15)
+        if not ref:
+            if not self.show_sessions():
+                return
+            try:
+                ref = input("  number or id (enter to cancel): ").strip()
+            except (KeyboardInterrupt, EOFError):
+                console.print()
+                return
+            if not ref:
+                return
+        row = rows[int(ref) - 1] if ref.isdigit() and 1 <= int(ref) <= len(rows) else self.store.get_session(ref)
+        if row is None:
+            note(f"No conversation matches {ref!r}. /sessions lists them.", WARN)
+            return
+        self.open_session(row)
+
+    def open_session(self, row: dict) -> None:
+        self.wait_idle()
+        folder = Path(row["cwd"])
+        if folder.is_dir() and folder != self.root:
+            self.workspace.change_directory(str(folder))
+        elif not folder.is_dir():
+            note(f"Its folder {short_path(folder)} is gone; staying in {short_path(self.root)}.", WARN)
+        self.new_session(row)
+        self._shown_cwd = self.root
+        recap(self.session, row)
+        note("in " + tail_path(self.root, 70))
+
+    def show_logs(self, arg: str) -> None:
+        words = arg.split()
+        limit = next((int(w) for w in words if w.isdigit()), 40)
+        events = self.store.events(self.session.id, limit) if self.store is not None else []
+        if not events:
+            note("Nothing has happened in this conversation yet.")
+            return
+        print_events(events, full="full" in words or self.verbose)
+        note(f"session {self.session.id} · stored in {tail_path(self.store.path, 50)}")
+
+    def show_status(self) -> None:
+        s = self.session
+        t = Table.grid(padding=(0, 2))
+        t.add_column(style=MUTED, justify="right")
+        t.add_column()
+        t.add_row("version", __version__)
+        t.add_row("model", model_label(self.cfg))
+        t.add_row("folder", tail_path(self.root, 70))
+        t.add_row("mode", f"{self.mode} · {MODES[self.mode]}")
+        t.add_row("session", f"{s.id} · {len(s.history)} messages" + (f" · {s.title}" if s.title else ""))
+        t.add_row("tokens", f"{fmt_tokens(s.tokens['input'])} in, {fmt_tokens(s.tokens['output'])} out")
+        t.add_row("context", f"{fmt_tokens(s.tokens['context'])} of {fmt_tokens(s.context_tokens)} "
+                             f"({min(100, round(100 * s.tokens['context'] / s.context_tokens))}%)")
+        t.add_row("history", tail_path(self.store.path, 70) if self.store is not None else "off")
+        console.print(Panel(t, title="status", title_align="left", border_style=ACCENT, box=box.ROUNDED, expand=False))
 
     # ----- slash commands -----
     def command(self, line: str) -> bool:
         """Runs a slash command. Returns False to quit."""
         cmd, _, arg = line.strip().partition(" ")
-        cmd = cmd.lower()
-        if cmd in ("/exit", "/quit", "/q"):
+        cmd = ALIASES.get(cmd.lower(), cmd.lower())
+        arg = arg.strip()
+        if cmd == "/exit":
             return False
         if cmd == "/help":
             t = Table(box=None, padding=(0, 2), show_header=False)
@@ -484,20 +569,32 @@ class App:
             for c, d in SLASH.items():
                 t.add_row(c, d)
             t.add_row("", "")
-            for k, d in [("@path", "attach a file to your message"), ("!command", "run a shell command yourself"),
-                         ("shift+tab", "cycle mode: ask → auto-edit → yolo"), ("esc then enter", "new line"),
-                         ("ctrl+c", "stop the answer · twice to quit"), ("↑ ↓", "previous messages")]:
+            for k, d in SHORTCUTS:
                 t.add_row(k, d)
             console.print(Panel(t, title="help", title_align="left", border_style=ACCENT, box=box.ROUNDED, expand=False))
-        elif cmd == "/clear":
+        elif cmd == "/cd":
+            self.cd(arg)
+        elif cmd == "/new":
+            self.wait_idle()
             self.session.clear()
             console.clear()
             banner(self.root, self.cfg, self.mode)
+        elif cmd == "/resume":
+            self.resume(arg)
+        elif cmd == "/sessions":
+            if self.show_sessions():
+                note("/resume NUMBER goes back to one.")
+        elif cmd == "/logs":
+            self.show_logs(arg)
+        elif cmd == "/verbose":
+            self.set_verbose(not self.verbose)
+        elif cmd == "/status":
+            self.show_status()
         elif cmd == "/mode":
-            if arg.strip() in MODES:
-                self.set_mode(arg.strip())
+            if arg in MODES:
+                self.set_mode(arg)
             else:
-                console.print(Text("  /mode ask | auto-edit | yolo", style=MUTED))
+                note("/mode ask | auto-edit | yolo")
         elif cmd == "/model":
             if pick_model(self.cfg):
                 self._reload_llm()
@@ -507,30 +604,37 @@ class App:
         elif cmd == "/docs":
             self.workspace.forget_index()
             n = len(self.workspace.doc_files())
-            console.print(Text(f"  {n} document{'s' if n != 1 else ''} (PDF, Markdown, text) will be searched.", style=MUTED))
+            note(f"{n} document{'s' if n != 1 else ''} (PDF, Markdown, text) will be searched.")
         elif cmd == "/app":
             open_app()
         else:
-            console.print(Text(f"  Unknown command {cmd}. Type /help.", style=WARN))
+            note(f"Unknown command {cmd}. Type /help.", WARN)
         return True
 
     def _reload_llm(self) -> None:
         try:
-            self.session.set_llm(self.llm())
+            self.wait_idle()
+            self.session.set_llm(make_llm(self.cfg), self.cfg.get("provider", ""), self.cfg.get("model", ""),
+                                 context_tokens(self.cfg))
             console.print(Text.assemble(("  model: ", MUTED), (model_label(self.cfg), "bold")))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self.show_error(exc)
 
     def shell(self, command: str) -> None:
         """`!command`: typed by the user, so it runs without an approval prompt."""
-        if not command.strip():
+        command = command.strip()
+        if not command:
+            return
+        moved = re.fullmatch(r"cd(\s+(?P<to>.+))?", command)
+        if moved:  # a child shell's `cd` would be lost; move Vesper itself
+            self.cd(moved.group("to") or "~")
             return
         try:
             proc = subprocess.run(command, shell=True, cwd=self.root)
             if proc.returncode:
-                console.print(Text(f"  exit code {proc.returncode}", style=WARN))
+                note(f"exit code {proc.returncode}", WARN)
         except KeyboardInterrupt:
-            console.print(Text("  stopped", style=WARN))
+            note("stopped", WARN)
 
     # ----- main loop -----
     def loop(self) -> None:
@@ -543,14 +647,16 @@ class App:
                 if time.monotonic() - last_interrupt < 2:
                     break
                 last_interrupt = time.monotonic()
-                console.print(Text("  Press Ctrl+C again to quit.", style=MUTED))
+                note("Press Ctrl+C again to quit.")
                 continue
             except EOFError:
                 break
             line = line.strip()
             if not line:
                 continue
-            if line.startswith("/"):
+            word = line.split()[0].lower()
+            # "/Users/me/notes.txt what is this?" is a message about a path, not a command.
+            if line.startswith("/") and (word in SLASH or word in ALIASES or not Path(line.split()[0]).exists()):
                 if not self.command(line):
                     break
                 continue
@@ -558,181 +664,15 @@ class App:
                 self.shell(line[1:])
                 continue
             console.print()
-            self.run_turn(self.expand_mentions(line))
+            self.run_turn(self.expand_mentions(line), shown=line)
             console.print()
+        if self.session is not None and self.session.history and self.store is not None:
+            note(f"Saved. Continue later with: vesper -r {self.session.id[:8]}")
         console.print(Text("  See you ✦", style=ACCENT))
 
 
-# ---------------------------------------------------------------- setup flows
-def ask_key(pid: str) -> bool:
-    from prompt_toolkit import prompt as pt_prompt
-
-    from vesper import providers as prov
-
-    p = prov.PROVIDERS.get(pid)
-    if p is None or not p.key_env:
-        console.print(Text("  This provider needs no key.", style=MUTED))
-        return False
-    if p.key_url:
-        console.print(Text.assemble(("  Get a key at ", MUTED), (p.key_url, f"underline {ACCENT_2}")))
-    try:
-        key = pt_prompt(f"  {p.label} API key (hidden): ", is_password=True).strip()
-    except (KeyboardInterrupt, EOFError):
-        return False
-    if not key:
-        return False
-    if any(c in key for c in "\r\n") or len(key) > 500:
-        error_panel("That key has a line break or is too long.")
-        return False
-    prov.save_user_settings({p.key_env: key})
-    console.print(Text(f"  ✓ Saved in {short_path(prov.USER_ENV)} (only your user can read it).", style=OK))
-    return True
-
-
-def _choose(title: str, options: list[tuple[str, str]], default: int = 0) -> int | None:
-    """Numbered menu. Returns the chosen index, or None if cancelled."""
-    console.print(Text(title, style="bold"))
-    for i, (label, note) in enumerate(options, start=1):
-        console.print(Text.assemble((f"  {i:>2}  ", ACCENT), (label, ""), (f"  {note}" if note else "", MUTED)))
-    while True:
-        try:
-            raw = input(f"  number [{default + 1}]: ").strip()
-        except (KeyboardInterrupt, EOFError):
-            return None
-        if not raw:
-            return default
-        if raw.isdigit() and 1 <= int(raw) <= len(options):
-            return int(raw) - 1
-        console.print(Text("  Type a number from the list.", style=WARN))
-
-
-def pick_model(cfg: dict) -> bool:
-    from vesper import providers as prov
-
-    ids = list(prov.PROVIDERS)
-    current = ids.index(cfg["provider"]) if cfg.get("provider") in ids else 0
-    opts = []
-    for pid in ids:
-        p = prov.PROVIDERS[pid]
-        status = "ready" if provider_ready(pid) else ("not running" if p.local else "needs a key")
-        opts.append((p.label, status))
-    i = _choose("Provider", opts, current)
-    if i is None:
-        return False
-    pid = ids[i]
-    p = prov.PROVIDERS[pid]
-    if pid == "custom" and not os.getenv("CUSTOM_BASE_URL"):
-        try:
-            url = input("  Base URL of your OpenAI-compatible server (e.g. http://localhost:8000/v1): ").strip()
-        except (KeyboardInterrupt, EOFError):
-            return False
-        if not re.match(r"^https?://[^\s@]+$", url):
-            error_panel("That is not an http(s) URL.")
-            return False
-        prov.save_user_settings({"CUSTOM_BASE_URL": url})
-    if p.key_env and not p.local and pid != "custom" and not prov._key(p) and not ask_key(pid):
-        return False
-    with console.status(Text("Fetching models…", style=MUTED), spinner="dots", spinner_style=ACCENT):
-        try:
-            live = prov.list_models(pid)
-        except Exception:
-            live = []
-    models = list(dict.fromkeys([*p.suggestions, *[m for m in live if "embed" not in m.lower()]]))[:30]
-    if not models and p.chat_model:
-        models = [p.chat_model]
-    opts = [(m, "default" if m == p.chat_model else "") for m in models] + [("Type another model id", "")]
-    j = _choose("Model", opts, 0)
-    if j is None:
-        return False
-    if j == len(models):
-        try:
-            model = input("  model id: ").strip()
-        except (KeyboardInterrupt, EOFError):
-            return False
-        if not re.match(r"^[\w.:/@+\-]{1,200}$", model):
-            error_panel("That does not look like a model id.")
-            return False
-    else:
-        model = models[j]
-    cfg.update(provider=pid, model=model)
-    save_config({"provider": pid, "model": model})
-    return True
-
-
-def first_run(cfg: dict) -> bool:
-    """Make sure a usable model is configured. Returns False if the user gave up."""
-    if cfg.get("provider") and provider_ready(cfg["provider"]):
-        return True
-    console.print(Panel(Text.assemble(
-        gradient("Welcome to Vesper"), "\n\n",
-        "Pick the AI model Vesper should use. Cloud providers need an API key, stored only on this computer.\n",
-        ("Ollama", "bold"), " runs models on your own machine for free, with no key.",
-    ), box=box.ROUNDED, border_style=ACCENT, padding=(1, 2), expand=False))
-    if not cfg.get("provider") and ollama_running():
-        cfg["provider"] = "ollama"
-    return pick_model(cfg)
-
-
-def open_app() -> None:
-    found: Path | None = None
-    if sys.platform == "darwin":
-        found = next((c for c in (Path("/Applications/Vesper.app"), Path.home() / "Applications" / "Vesper.app")
-                      if c.exists()), None)
-        if found:
-            subprocess.Popen(["open", str(found)])
-    elif os.name == "nt":
-        exe = Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Vesper" / "Vesper.exe"
-        if exe.exists():
-            found = exe
-            subprocess.Popen([str(exe)])
-    else:
-        img = Path.home() / ".local" / "share" / "vesper" / "Vesper.AppImage"
-        if img.exists():
-            found = img
-            subprocess.Popen([str(img)], start_new_session=True)
-    if found:
-        console.print(Text("  Opening the Vesper app…", style=MUTED))
-        return
-    console.print(Text("  The desktop app is not installed; opening the same interface in your browser…", style=MUTED))
-    subprocess.Popen([sys.executable, "-m", "vesper.desktop"], start_new_session=True)
-
-
-# ---------------------------------------------------------------- entry points
-def trust_folder(root: Path) -> bool:
-    """Ask once per folder: text inside files can try to steer an AI model."""
-    path = _home() / "trusted.json"
-    try:
-        trusted = set(json.loads(path.read_text()))
-    except (OSError, ValueError, TypeError):
-        trusted = set()
-    if str(root) in trusted:
-        return True
-    warn = ""
-    if root == Path.home() or root == Path(root.anchor):
-        warn = "\nThis is your whole home folder or drive. Starting inside a project folder is safer.\n"
-    console.print(Panel(Text.assemble(
-        ("Do you trust the files in this folder?\n\n", "bold"),
-        (short_path(root) + "\n", ACCENT),
-        (warn, WARN),
-        ("\nVesper reads files here. Text inside files can try to trick an AI model, "
-         "so Vesper asks before it edits a file or runs a command.", MUTED),
-    ), box=box.ROUNDED, border_style=WARN, padding=(1, 2), expand=False))
-    try:
-        answer = input("  Trust this folder? [Y/n] ").strip().lower()
-    except (KeyboardInterrupt, EOFError):
-        return False
-    if answer not in ("", "y", "yes"):
-        return False
-    trusted.add(str(root))
-    try:
-        _home().mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(sorted(trusted), indent=1))
-    except OSError:
-        pass
-    return True
-
-
-def print_mode(root: Path, question: str, cfg: dict, mode: str) -> int:
+# ---------------------------------------------------------------- one-shot mode
+def print_mode(root: Path, question: str, cfg: dict, mode: str, store=None, resume: dict | None = None) -> int:
     """`vesper "question"`: the answer on stdout, tool activity on stderr, no prompts.
 
     Nobody can answer an approval prompt here, so in "ask" mode edits and commands are refused.
@@ -746,24 +686,104 @@ def print_mode(root: Path, question: str, cfg: dict, mode: str) -> int:
         return 2
     ws = Workspace(root, mode=mode,
                    embeddings_factory=lambda: prov.get_embeddings(cfg.get("embeddings") or "local"))
+
+    def on_sigint(signum, frame):  # stop a running command first, or it would outlive us
+        ws.cancel()
+        raise KeyboardInterrupt
+
+    previous = signal.signal(signal.SIGINT, on_sigint)
     answer = []
     try:
-        session = Session(prov.get_llm(cfg.get("provider"), cfg.get("model") or None), ws)
+        session = Session(make_llm(cfg), ws, store, session_id=resume["id"] if resume else None, source="print",
+                          provider=cfg.get("provider", ""), model=cfg.get("model", ""),
+                          context_tokens=context_tokens(cfg))
         for event, data in session.ask(question):
             if event == "token":
                 answer.append(data["text"])
             elif event == "tool_start":
                 if answer and not answer[-1].endswith("\n"):
                     answer.append("\n\n")  # text before and after a tool call are separate paragraphs
-                label = TOOL_LABELS.get(data["name"], data["name"])
-                err_console.print(f"● {label} {summarize_args(data['name'], data['args'])}", style=MUTED)
-    except Exception as exc:
-        from vesper.server import friendly_error
-
-        err_console.print(friendly_error(exc, cfg.get("provider", "")), style=ERR)
+                err_console.print(tool_start_line(data["name"], data["args"]).plain, style=MUTED)
+            elif event == "tool_end" and not data["ok"]:
+                err_console.print(tool_end_line(data["name"], data["output"], False, data.get("ms")).plain, style=MUTED)
+            elif event == "notice":
+                err_console.print(data["text"], style=WARN)
+    except KeyboardInterrupt:
+        err_console.print("Stopped.", style=WARN)
+        return 130
+    except Exception as exc:  # noqa: BLE001
+        err_console.print(friendly(exc, cfg), style=ERR)
         return 1
+    finally:
+        signal.signal(signal.SIGINT, previous)
     print("".join(answer).strip())
     return 0
+
+
+# ---------------------------------------------------------------- `vesper sessions` and `vesper logs`
+def sessions_command(argv: list[str]) -> int:
+    ap = argparse.ArgumentParser(prog="vesper sessions", description="List saved conversations, newest first.")
+    ap.add_argument("-n", type=int, default=20, help="how many to show (default 20)")
+    ap.add_argument("--here", action="store_true", help="only conversations in the current folder")
+    ap.add_argument("--json", action="store_true", help="print JSON instead of a table")
+    args = ap.parse_args(argv)
+    store = open_store()
+    if store is None:
+        return 1
+    rows = store.list_sessions(args.n, Path.cwd().resolve() if args.here else None)
+    if args.json:
+        print(json.dumps(rows, indent=2))
+    elif not rows:
+        note("No saved conversations yet. Start one with: vesper")
+    else:
+        console.print(sessions_table(rows))
+        note("vesper -r ID resumes one · vesper logs ID shows what the agent did")
+    return 0
+
+
+def logs_command(argv: list[str]) -> int:
+    ap = argparse.ArgumentParser(prog="vesper logs", description="Show what the agent did in a conversation.")
+    ap.add_argument("id", nargs="?", help="session id or its first characters (default: the latest conversation)")
+    ap.add_argument("-n", type=int, default=200, help="how many events to show (default 200)")
+    ap.add_argument("--full", action="store_true", help="include tool arguments and output")
+    ap.add_argument("--json", action="store_true", help="print one JSON object per line")
+    args = ap.parse_args(argv)
+    store = open_store()
+    if store is None:
+        return 1
+    row = store.get_session(args.id) if args.id else store.latest()
+    if row is None:
+        err_console.print(f"No conversation matches {args.id!r}." if args.id else "No saved conversations yet.", style=ERR)
+        return 1
+    events = store.events(row["id"], args.n)
+    if args.json:
+        for e in events:
+            print(json.dumps(e, ensure_ascii=False))
+        return 0
+    console.print(Text.assemble(("  " + (row["title"] or "(untitled)"), "bold"),
+                                (f"  · {row['id']} · {tail_path(row['cwd'], 40)} · {row['model'] or 'model unknown'}", MUTED)))
+    print_events(events, full=args.full)
+    return 0
+
+
+# ---------------------------------------------------------------- entry point
+def pick_resume(store, ref: str | None, here: Path, interactive: bool) -> dict | None:
+    """The session for `-c` (ref is None: the latest one in this folder) or `-r [ID]`."""
+    if store is None:
+        return None
+    if ref is None:
+        return store.latest(here)
+    if ref:
+        return store.get_session(ref)
+    rows = store.list_sessions(15)
+    if not rows or not interactive:
+        return rows[0] if rows else None
+    console.print(sessions_table(rows))
+    try:
+        raw = input("  number or id: ").strip()
+    except (KeyboardInterrupt, EOFError):
+        return None
+    return rows[int(raw) - 1] if raw.isdigit() and 1 <= int(raw) <= len(rows) else store.get_session(raw)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -775,18 +795,25 @@ def main(argv: list[str] | None = None) -> int:
     if argv and argv[0] in ("ask", "agent", "chat", "eval"):
         from vesper.cli import main as lab_main
 
-        lab_main(argv)
-        return 0
+        return lab_main(argv) or 0
     if argv and argv[0] == "app":
         open_app()
         return 0
+    if argv and argv[0] == "sessions":
+        return sessions_command(argv[1:])
+    if argv and argv[0] == "logs":
+        return logs_command(argv[1:])
 
     ap = argparse.ArgumentParser(
-        prog="vesper", description="Vesper: an AI agent that works in your folder.",
-        epilog="Desktop app: vesper app.  Lab commands: vesper ask | agent | chat | eval.",
+        prog="vesper", description="Vesper: an AI coding agent for your terminal.",
+        epilog="More: vesper sessions · vesper logs [ID] · vesper app · vesper ask | agent | chat | eval",
     )
     ap.add_argument("prompt", nargs="*", help="ask once and print the answer instead of starting a session")
-    ap.add_argument("-C", "--dir", default=".", help="folder to work in (default: the current folder)")
+    ap.add_argument("-C", "--dir", default=".", help="folder to start in (default: the current folder)")
+    ap.add_argument("-c", "--continue", dest="cont", action="store_true",
+                    help="continue the last conversation in this folder")
+    ap.add_argument("-r", "--resume", nargs="?", const="", metavar="ID",
+                    help="resume a conversation by id (no id: pick from a list)")
     ap.add_argument("--mode", choices=list(MODES), help="ask (default), auto-edit or yolo")
     ap.add_argument("--model", help="provider/model, e.g. openai/gpt-4.1-mini or ollama/llama3.2")
     ap.add_argument("-v", "--version", action="version", version=f"vesper {__version__}")
@@ -810,26 +837,42 @@ def main(argv: list[str] | None = None) -> int:
     piped = "" if sys.stdin is None or sys.stdin.isatty() else sys.stdin.read(MAX_PIPED_CHARS + 1).strip()
     if len(piped) > MAX_PIPED_CHARS:
         piped = piped[:MAX_PIPED_CHARS] + "\n[... input cut off]"
-    if args.prompt or piped:
+    one_shot = bool(args.prompt or piped)
+
+    store = open_store()
+    resume = None
+    if args.cont or args.resume is not None:
+        resume = pick_resume(store, None if args.cont else args.resume, root, interactive=not one_shot)
+        if resume is None:
+            if args.resume:
+                err_console.print(f"No conversation matches {args.resume!r}. See: vesper sessions", style=ERR)
+                return 2
+            err_console.print("No earlier conversation to continue; starting a new one.", style=MUTED)
+        elif Path(resume["cwd"]).is_dir():
+            root = Path(resume["cwd"])
+
+    if one_shot:
         question = " ".join(args.prompt)
         if piped:  # `git diff | vesper "write a commit message"`: the piped text comes with the question
             question = f"{question}\n\n<stdin>\n{piped}\n</stdin>" if question else piped
-        return print_mode(root, question, cfg, mode)
+        return print_mode(root, question, cfg, mode, store, resume)
 
     console.print()
     if not trust_folder(root):
         return 1
     if not first_run(cfg):
-        console.print(Text("  No model chosen. Run vesper again when you are ready.", style=MUTED))
+        note("No model chosen. Run vesper again when you are ready.")
         return 1
-    app = App(root, mode, cfg)
+    app = App(root, mode, cfg, store)
     banner(root, cfg, mode)
     with console.status(Text("Starting…", style=MUTED), spinner="dots", spinner_style=ACCENT):
         try:
-            app.build()
-        except Exception as exc:
+            app.build(resume)
+        except Exception as exc:  # noqa: BLE001
             app.show_error(exc)
             return 1
+    if resume:
+        recap(app.session, resume)
     app.loop()
     return 0
 

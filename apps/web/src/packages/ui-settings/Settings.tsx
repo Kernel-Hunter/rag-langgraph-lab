@@ -29,7 +29,7 @@ function Section({ title, desc, children }: { title: string; desc?: string; chil
 const AGENT_MODES: { id: AgentMode; label: string; hint: string }[] = [
   { id: 'ask', label: 'Ask first', hint: 'Reads freely. Asks before every edit and every command.' },
   { id: 'auto-edit', label: 'Auto-edit', hint: 'Edits files without asking. Still asks before running commands.' },
-  { id: 'yolo', label: 'Full access', hint: 'Edits and runs commands without asking. Only for folders you can afford to lose.' },
+  { id: 'yolo', label: 'Full access', hint: 'Edits and runs commands without asking. Only when you can afford to lose the files it can reach.' },
 ]
 
 function FolderTab() {
@@ -41,7 +41,7 @@ function FolderTab() {
   const s = server.settings
   return (
     <>
-      <Section title="Working folder" desc="Vesper reads, searches, edits and runs commands inside this folder, and nowhere else. PDFs, Markdown and text files in it can be searched with citations.">
+      <Section title="Working folder" desc="Where Vesper starts: relative paths and commands run here. It can go to other folders when you ask. PDFs, Markdown and text files in it can be searched with citations.">
         <form className="key-input" onSubmit={e => { e.preventDefault(); if (path.trim()) void openFolder(path.trim()) }}>
           <input className="input mono" value={path} onChange={e => setPath(e.target.value)} placeholder="/Users/you/projects/my-app" aria-label="Folder path" spellCheck={false} />
           {canPickFolder() && <button type="button" className="btn ghost" onClick={() => void pickFolder()}><Icon name="folder" size={14} /> Browse</button>}

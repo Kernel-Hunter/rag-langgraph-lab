@@ -1,8 +1,8 @@
-"""Swap a block without touching the rest (slide 8), for many providers.
+"""Chat models and embedding models, for many providers.
 
-Every other module asks this file for a chat model and an embedding model.
-Most providers speak the OpenAI API, so one client with a different base URL
-covers them; Anthropic gets its own client.
+Every other module asks this file for a chat model and an embedding model, so a provider
+is added here and nowhere else. Most providers speak the OpenAI API, so one client with a
+different base URL covers them. Anthropic and Ollama get their own clients.
 """
 
 from __future__ import annotations
@@ -120,10 +120,24 @@ PROVIDERS: dict[str, Provider] = {
 LOCAL_EMBED_MODEL = "BAAI/bge-small-en-v1.5"
 EMBEDDING_PROVIDERS = ["local"] + [p.id for p in PROVIDERS.values() if p.embed_model] + ["fake"]
 
-# Kept for the CLI and older code.
-LLM_DEFAULTS = {pid: p.chat_model for pid, p in PROVIDERS.items()}
-EMBEDDING_DEFAULTS = {"local": LOCAL_EMBED_MODEL, "fake": "deterministic-256",
-                      **{p.id: p.embed_model for p in PROVIDERS.values() if p.embed_model}}
+
+# Ollama loads a model with a 4096-token window unless told otherwise. That is too small for
+# an agent (the system prompt, the tool list and one file fill it), so Vesper asks for more.
+OLLAMA_CONTEXT_TOKENS = 16_384
+DEFAULT_CONTEXT_TOKENS = 120_000  # assumed for hosted models
+
+
+def ollama_context_tokens() -> int:
+    """Context window requested from Ollama. VESPER_OLLAMA_CTX overrides it."""
+    try:
+        return max(2048, int(os.getenv("VESPER_OLLAMA_CTX", "")))
+    except ValueError:
+        return OLLAMA_CONTEXT_TOKENS
+
+
+def context_tokens(provider: str | None) -> int:
+    """How many tokens a conversation with this provider may hold."""
+    return ollama_context_tokens() if provider == "ollama" else DEFAULT_CONTEXT_TOKENS
 
 
 def _key(provider: Provider) -> str | None:
@@ -194,6 +208,12 @@ def get_llm(provider: str | None = None, model: str | None = None, temperature: 
         from langchain_anthropic import ChatAnthropic
 
         return ChatAnthropic(model=model, temperature=temperature, api_key=_key(p))
+    if p.id == "ollama":
+        from langchain_ollama import ChatOllama
+
+        # The native API, not the OpenAI-compatible one: only it accepts a context size.
+        base = (_base_url(p) or "").rstrip("/").removesuffix("/v1")
+        return ChatOllama(model=model, temperature=temperature, base_url=base, num_ctx=ollama_context_tokens())
     from langchain_openai import ChatOpenAI
 
     return ChatOpenAI(
