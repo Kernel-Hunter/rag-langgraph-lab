@@ -101,7 +101,7 @@ def test_run_command_streams_output_and_can_be_cancelled(tmp_path):
     lines = []
     w = Workspace(tmp_path, mode="yolo", on_output=lines.append)
     assert "exit code 0" in w.run_command("echo one && echo two")
-    assert lines == ["one", "two"]
+    assert [line.strip() for line in lines] == ["one", "two"]  # cmd.exe keeps the space before &&
     if os.name != "posix":
         return
     threading.Timer(0.3, w.cancel).start()
