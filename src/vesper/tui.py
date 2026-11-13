@@ -512,21 +512,7 @@ class App:
     def expand_mentions(self, text: str) -> tuple[str, list[dict]]:
         """`@path` attaches a file, a folder or an image; so does an image path dropped into the terminal.
         Returns (message text, image blocks)."""
-        from vesper import attachments as att
-
-        refs = mention_refs(text)
-        for path in dropped_paths(text):  # dragging a picture onto the terminal pastes its path
-            if Path(path).suffix.lower() in att.IMAGE_TYPES and path not in refs:
-                refs.append(path)
-        refs = [r for r in refs if r.startswith(("/", "~")) or self.workspace.resolve(r).exists()]
-        if not refs:
-            return text, []
-        out = att.attach(self.workspace, refs)
-        for name in out.names:
-            console.print(Text.assemble(("  ⎿  attached ", MUTED), (name, ACCENT)))
-        for problem in out.problems:
-            note(f"⎿  not attached: {problem}", WARN)
-        return out.message(text), out.images
+        return attach_mentions(self.workspace, text, console)
 
     # ----- plan, undo, context, rules -----
     def offer_plan(self) -> bool:
@@ -875,6 +861,26 @@ class App:
 
 
 # ---------------------------------------------------------------- one-shot mode
+def attach_mentions(workspace, text: str, out_console) -> tuple[str, list[dict]]:
+    """The files, folders and images a message names with `@path` (or as a dropped image path), attached.
+    Returns (message text, image blocks) and prints what was attached to `out_console`."""
+    from vesper import attachments as att
+
+    refs = mention_refs(text)
+    for path in dropped_paths(text):  # dragging a picture onto the terminal pastes its path
+        if Path(path).suffix.lower() in att.IMAGE_TYPES and path not in refs:
+            refs.append(path)
+    refs = [r for r in refs if r.startswith(("/", "~")) or workspace.resolve(r).exists()]
+    if not refs:
+        return text, []
+    out = att.attach(workspace, refs)
+    for name in out.names:
+        out_console.print(Text.assemble(("  ⎿  attached ", MUTED), (name, ACCENT)))
+    for problem in out.problems:
+        out_console.print(Text(f"  ⎿  not attached: {problem}", style=WARN))
+    return out.message(text), out.images
+
+
 def print_mode(root: Path, question: str, cfg: dict, mode: str, store=None, resume: dict | None = None) -> int:
     """`vesper "question"`: the answer on stdout, tool activity on stderr, no prompts.
 
@@ -902,7 +908,9 @@ def print_mode(root: Path, question: str, cfg: dict, mode: str, store=None, resu
         session = Session(make_llm(cfg), ws, store, session_id=resume["id"] if resume else None, source="print",
                           provider=cfg.get("provider", ""), model=cfg.get("model", ""),
                           context_tokens=context_tokens(cfg))
-        for event, data in session.ask(question):
+        message, images = attach_mentions(ws, question, err_console)
+        shown = question if message != question else None
+        for event, data in session.ask(message, shown=shown, images=images or None):
             if event == "token":
                 answer.append(data["text"])
             elif event == "tool_start":

@@ -320,6 +320,26 @@ def test_print_mode_with_fresh_home_and_piped_input(tmp_path, monkeypatch, capsy
     assert not (tmp_path / "vesper-notes.md").exists()  # ask mode with nobody to answer: refused
 
 
+def test_print_mode_attaches_mentioned_files(tmp_path, monkeypatch, capsys):
+    """`vesper "explain @notes.md"` sends the file with the question, like a session does."""
+    import io
+
+    from vesper import tui
+    from vesper.store import Store
+
+    monkeypatch.setenv("VESPER_FAKE_LLM", "1")
+    monkeypatch.setattr(tui, "load_config", lambda: {})
+    monkeypatch.setattr("sys.stdin", io.StringIO(""))
+    (tmp_path / "notes.md").write_text("the secret word is plum\n")
+    assert tui.main(["-C", str(tmp_path), "--mode", "ask", "explain @notes.md"]) == 0
+    assert "attached" in capsys.readouterr().err
+    store = Store()
+    sid = store.list_sessions()[0]["id"]
+    first = store.load_messages(sid)[0]
+    assert "the secret word is plum" in str(first.content)
+    assert store.list_sessions()[0]["title"].startswith("explain @notes.md")
+
+
 def test_stopped_workspace_refuses_tools_until_the_next_turn(ws):
     ws.cancel()
     assert "stopped" in tools(ws)["read_file"].invoke({"path": "notes.md"})
