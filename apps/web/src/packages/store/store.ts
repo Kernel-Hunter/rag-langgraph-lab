@@ -482,19 +482,21 @@ export async function retry(chatId: string, botId: string): Promise<void> {
 
 // ---------------- saved sessions ----------------
 /** Every conversation in the session database: the sidebar's list. */
+const HISTORY_LIMIT = 200 // matches api.sessions
 export async function loadHistory(): Promise<void> {
   try {
     const history = await api.sessions()
     set(s => {
-      // A chat open here whose conversation was deleted elsewhere (the terminal) goes too.
+      // A chat open here whose conversation was deleted elsewhere (the terminal) goes too. Only when the
+      // list is complete: a full page may leave out an old conversation that still exists.
       const ids = new Set(history.map(h => h.id))
-      const chats = s.chats.filter(c => !c.sessionId || ids.has(c.sessionId) || c.id === s.streamingId)
+      const complete = history.length < HISTORY_LIMIT
+      const chats = s.chats.filter(c => !complete || !c.sessionId || ids.has(c.sessionId) || c.id === s.streamingId)
       return {
         history,
         historyLoaded: true,
         chats,
         currentId: chats.some(c => c.id === s.currentId) ? s.currentId : null,
-        // Titles renamed elsewhere follow.
       }
     })
   } catch { /* the engine is not up yet; refresh() retries */ }
