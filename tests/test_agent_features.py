@@ -2,6 +2,7 @@
 the task list and the web tools. All offline."""
 
 import json
+from pathlib import Path
 
 import pytest
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
@@ -160,6 +161,12 @@ def test_edit_that_cannot_be_placed_says_why(proj):
     with pytest.raises(ToolError, match=r"closest line is 3: \"return 'hi'\""):
         ws.edit_file("app.py", "return 'hi!'", "return 'yo'")
     assert "return 'hi'" in (proj / "app.py").read_text()
+
+
+def test_forgiving_edit_keeps_windows_line_endings(tmp_path):
+    (tmp_path / "w.py").write_bytes(b"def f():\r\n    if x:\r\n        return 1\r\n")
+    Workspace(tmp_path, mode="yolo").edit_file("w.py", "if x:\n    return 1", "if x:\n    y = 2\n    return y")
+    assert (tmp_path / "w.py").read_bytes() == b"def f():\r\n    if x:\r\n        y = 2\r\n        return y\r\n"
 
 
 def test_exact_match_wins_over_the_forgiving_one(tmp_path):
@@ -340,9 +347,9 @@ def test_undo_goes_back_one_turn_at_a_time_and_keeps_binary_files(proj):
     original = (proj / "app.py").read_text()
     list(s.ask("one"))
     list(s.ask("two"))
-    assert [p.rsplit("/", 1)[-1] for p in s.undo()] == ["app.py"] and (proj / "app.py").read_text() == original
+    assert [Path(p).name for p in s.undo()] == ["app.py"] and (proj / "app.py").read_text() == original
     assert (proj / "blob.bin").read_text() == "text now\n"
-    assert [p.rsplit("/", 1)[-1] for p in s.undo()] == ["blob.bin"] and (proj / "blob.bin").read_bytes() == b"\x00\x01\x02"
+    assert [Path(p).name for p in s.undo()] == ["blob.bin"] and (proj / "blob.bin").read_bytes() == b"\x00\x01\x02"
     assert s.undo() == []
 
 

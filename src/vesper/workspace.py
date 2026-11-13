@@ -808,8 +808,8 @@ def _fit_block(found: str, old: str, new: str) -> str:
     elif gave.startswith(have):
         extra = gave[len(have):]
         lines = [line.removeprefix(extra) for line in lines]
-    ending = "\r\n" if found.endswith("\r\n") else "\n" if found.endswith("\n") else ""
-    return "\n".join(lines) + ending
+    newline = "\r\n" if "\r\n" in found else "\n"  # keep the file's line endings
+    return newline.join(lines) + (newline if found.endswith("\n") else "")
 
 
 def _closest(text: str, old: str) -> str:
