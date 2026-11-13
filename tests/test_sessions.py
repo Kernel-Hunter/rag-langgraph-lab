@@ -112,7 +112,7 @@ def test_agent_can_move_between_folders(store, proj):
     # The next turn's system prompt names the new folder.
     s.set_llm(fake(AIMessage("ok")))
     list(s.ask("and now?"))
-    assert s._agent_cwd == (proj / "sub").resolve()
+    assert s._agent_key[0] == (proj / "sub").resolve()
 
 
 def test_failed_turn_is_logged_and_history_stays_usable(store, proj):
@@ -149,7 +149,7 @@ def test_repair_and_fit_history():
     big = "y" * 5000
     history = []
     for i in range(6):
-        history += [HumanMessage(f"q{i}"), call("read_file", f"c{i}", path="f"),
+        history += [HumanMessage(f"q{i}"), call("read_file", f"c{i}", path=f"f{i}"),
                     ToolMessage(big, tool_call_id=f"c{i}", name="read_file"), AIMessage(f"a{i}")]
     same, cut = fit_history(history, 10**9)
     assert same is history and not cut
@@ -159,11 +159,29 @@ def test_repair_and_fit_history():
     small, cut = fit_history(history, 6_000)
     assert cut and isinstance(small[0], HumanMessage) and small[-1].content == "a5" and len(small) < len(history)
 
+    # The same file read again and again: only the last result is kept, and that is enough.
+    again = []
+    for i in range(6):
+        again += [HumanMessage(f"q{i}"), call("read_file", f"c{i}", path="f"),
+                  ToolMessage(big, tool_call_id=f"c{i}", name="read_file"), AIMessage(f"a{i}")]
+    deduped, cut = fit_history(again, 12_000)
+    assert cut and len(deduped) == len(again) and deduped[-2].content == big
+    assert all("read again later" in m.content for m in deduped[:-2] if isinstance(m, ToolMessage))
+
 
 def test_long_conversation_is_trimmed_with_a_notice(proj):
-    s = Session(fake(AIMessage("ok")), Workspace(proj), context_tokens=100)
+    # The model that cannot summarize (it fails): older turns are dropped instead.
+    class Broken(ToolFake):
+        def _generate(self, messages, *args, **kwargs):
+            if messages[0].content == prompts.COMPACT_PROMPT:
+                raise RuntimeError("no summary today")
+            return super()._generate(messages, *args, **kwargs)
+
+    s = Session(Broken(disable_streaming=True, messages=iter([AIMessage("ok")])), Workspace(proj), context_tokens=100)
     s.history = [HumanMessage("old " * 300), AIMessage("old answer " * 300), HumanMessage("b"), AIMessage("c")]
-    assert "notice" in [e for e, _ in s.ask("next")]
+    notices = [d["text"] for e, d in s.ask("next") if e == "notice"]
+    assert notices and "trimmed" in notices[0]
+    assert s.history[0].content == "b"
 
 
 # ---------------------------------------------------------------- prompts

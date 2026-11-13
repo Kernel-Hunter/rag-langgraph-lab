@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react'
-import { currentChat, openSettings, saveSettings, send, stop, useStore } from '../store/store'
+import { currentChat, openSettings, runCommand, saveSettings, send, stop, togglePlan, useStore } from '../store/store'
 import { Icon } from '../ui-primitives/Icon'
 import { ModelPicker } from '../ui-model-selection/ModelPicker'
 
@@ -41,6 +41,7 @@ export function Composer() {
     if (!q || streaming) return
     if (q.length > MAX_LEN) return
     setText('')
+    if (q.startsWith('/') && runCommand(q)) return
     void send(q)
   }
 
@@ -78,7 +79,14 @@ export function Composer() {
             {folder ? (
               <button type="button" className="chip-btn" onClick={() => openSettings('folder')} title="What the agent may do without asking">
                 <Icon name={settings?.agent_mode === 'yolo' ? 'warn' : 'shield'} size={14} />
-                {settings?.agent_mode === 'yolo' ? 'Full access' : settings?.agent_mode === 'auto-edit' ? 'Auto-edit' : 'Ask first'}
+                {settings?.agent_mode === 'yolo' ? 'Full access' : settings?.agent_mode === 'auto-edit' ? 'Auto-edit' : settings?.agent_mode === 'plan' ? 'Read only' : 'Ask first'}
+              </button>
+            ) : null}
+            {folder ? (
+              <button type="button" className={`chip-btn toggle${settings?.agent_mode === 'plan' ? ' on' : ''}`} onClick={() => void togglePlan()}
+                aria-pressed={settings?.agent_mode === 'plan'} disabled={streaming}
+                title="Plan mode: Vesper reads and proposes a plan, and changes nothing until you approve it">
+                <Icon name="list" size={14} /> Plan
               </button>
             ) : (
             <button

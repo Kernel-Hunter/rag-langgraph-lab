@@ -188,5 +188,14 @@
 }
 .thought.live .thought-text { max-height: 132px; display: flex; flex-direction: column-reverse; }
 .tool-out.live { max-height: 150px; display: flex; flex-direction: column-reverse; border-style: dashed; }
+.tasks { display: flex; flex-direction: column; gap: 3px; padding: 9px 12px; border-radius: var(--r-md); border: 1px solid var(--line); background: var(--layer-1); font-size: 13px; }
+.task { display: flex; gap: 8px; align-items: baseline; color: var(--text-2); }
+.task .mark { width: 14px; flex: none; text-align: center; color: var(--text-3); }
+.task.done { color: var(--text-3); }
+.task.done span:last-child { text-decoration: line-through; }
+.task.done .mark { color: var(--ok); }
+.task.active { color: var(--text); font-weight: 560; }
+.task.active .mark { color: var(--accent); }
+.plan-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 12.5px; }
 .usage { font-size: 11.5px; color: var(--text-3); font-variant-numeric: tabular-nums; }
 [data-theme="terminal"] .thought-text { border-left-style: dashed; }

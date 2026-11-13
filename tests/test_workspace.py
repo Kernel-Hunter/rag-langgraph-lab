@@ -132,7 +132,7 @@ def test_list_files_skips_ignored(ws):
 
 def test_read_file_numbers_lines(ws):
     out = ws.read_file("src/app.py", offset=2, limit=1)
-    assert "     2\t    return 'hi'" in out and "offset=3" in out
+    assert out.startswith("2\t    return 'hi'") and "offset=3" in out
     assert "binary" in ws.read_file("blob.bin")
     assert tools(ws)["read_file"].invoke({"path": "missing.txt"}).startswith("Error:")
 

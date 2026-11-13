@@ -6,9 +6,10 @@ it: absolute paths and `~` work, like in a shell.
 
 Reading, listing and searching run freely. Writing a file, editing a file and running a
 shell command go through `approve`, which the terminal UI turns into a y/n prompt and the
-desktop app into an Allow/Deny card. Three things are stricter than the approval mode:
-commands that can wipe a disk and edits to credential folders always ask, and files that
-hold secrets are never read.
+desktop app into an Allow/Deny card. Read-only commands and commands the user saved a
+rule for skip the question (`permissions.py`). Three things are stricter than the approval
+mode: commands that can wipe a disk and edits to credential folders always ask, and files
+that hold secrets are never read. In plan mode nothing is changed at all.
 
 Tool errors come back as text starting with "Error:" so the model can recover.
 """
@@ -29,6 +30,8 @@ from pathlib import Path
 
 from langchain.tools import tool
 
+from vesper import permissions
+
 IGNORED_DIRS = {
     ".git", ".hg", ".svn", "node_modules", ".venv", "venv", "env", "__pycache__", ".mypy_cache",
     ".pytest_cache", ".ruff_cache", ".tox", "dist", "build", ".next", ".nuxt", "target", ".idea",
@@ -38,18 +41,26 @@ DOC_SUFFIXES = {".pdf", ".md", ".txt"}  # what vesper.indexing can load
 MAX_READ_BYTES = 2_000_000          # text files larger than this are read in part only
 MAX_LINE_CHARS = 2000
 DEFAULT_READ_LINES = 400
-MAX_LIST_ENTRIES = 500
-MAX_MATCHES = 200
+MAX_LIST_ENTRIES = 300
+MAX_MATCHES = 100
 MAX_GREP_FILE_BYTES = 2_000_000
-MAX_OUTPUT_CHARS = 20_000
+MAX_OUTPUT_CHARS = 12_000         # command output and web pages returned to the model
 MAX_WRITE_CHARS = 1_000_000
 MAX_INDEX_FILES = 300
 MAX_INDEX_BYTES = 150_000_000
 MAX_SCAN_FILES = 50_000             # glob and grep stop walking after this many files
+MAX_TASKS = 20
+
+READ_ONLY = {"list_files", "read_file", "glob", "grep", "search_docs"}          # same call, same answer
+CHANGES_THINGS = {"write_file", "edit_file", "run_command", "change_directory"}  # after these, read again
+REPEATED = ("You already made this exact call in this turn and nothing has changed since. "
+            "Use the result you have; do not call it again.")
+PLAN_REFUSAL = ("Plan mode is on: files are not changed and commands are not run yet. "
+                "Finish reading, then answer with the plan and stop.")
 
 # What `approve` returns: "yes" (this call), "always" (this kind of action for the session), "no".
 Approver = Callable[[dict], str]
-MODES = ("ask", "auto-edit", "yolo")
+MODES = ("ask", "auto-edit", "yolo", "plan")
 
 # Commands that can destroy a disk or a home folder. These ask even in yolo mode.
 DANGEROUS_COMMAND = re.compile(
@@ -79,14 +90,21 @@ def _deny_all(_action: dict) -> str:
 class Workspace:
     root: Path
     approve: Approver = _deny_all
-    mode: str = "ask"  # ask | auto-edit (edits run without asking) | yolo (nothing asks)
+    mode: str = "ask"  # ask | auto-edit (edits run without asking) | yolo (nothing asks) | plan (read only)
     embeddings_factory: Callable[[], object] | None = None
     k: int = 4
     on_sources: Callable[[str, list], None] | None = None
     on_cwd: Callable[[Path], None] | None = None        # the working directory changed
     on_auto: Callable[[dict], None] | None = None       # an edit or command ran without asking
     on_output: Callable[[str], None] | None = None      # a line of output from a running command
-    always: set[str] = field(default_factory=set)
+    on_rule: Callable[[str, str], None] | None = None   # the user saved a rule: (config key, rule)
+    on_change: Callable[[Path, bytes | None], None] | None = None  # a file is about to change (its old bytes)
+    on_tasks: Callable[[list], None] | None = None      # the agent updated its task list
+    always: set[str] = field(default_factory=set)       # "edit", or exact commands, allowed for this session
+    rules: list[str] = field(default_factory=list)      # command prefixes that never ask
+    hosts: list[str] = field(default_factory=list)      # web hosts that never ask
+    tasks: list[dict] = field(default_factory=list)     # [{"text", "status": pending | active | done}]
+    _seen: set = field(default_factory=set, repr=False)  # read-only calls already answered this turn
     _index: object | None = field(default=None, repr=False)
     _index_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     _running: list = field(default_factory=list, repr=False)  # stop functions of commands in progress
@@ -168,12 +186,23 @@ class Workspace:
 
     # ---------------------------------------------------------------- approval
     def _gate(self, kind: str, action: dict, strict: bool = False) -> None:
-        """kind: "edit" (write/edit a file) or "run" (shell command). Raises ToolError if refused.
+        """kind: "edit" (write or edit a file), "run" (shell command) or "web" (fetch a page).
 
-        `strict` actions (see the module docstring) ask whatever the mode, and "always" does not cover them.
+        Raises ToolError if refused. `strict` actions (see the module docstring) ask whatever
+        the mode, and "always" does not cover them.
         """
-        action = {**action, "kind": kind, "strict": strict}
-        free = self.mode == "yolo" or kind in self.always or (self.mode == "auto-edit" and kind == "edit")
+        command, host = action.get("command", ""), action.get("host", "")
+        if kind == "run":
+            listed = permissions.allowed(command, self.rules) or command in self.always
+            rule = permissions.command_prefix(command)
+        elif kind == "web":
+            listed, rule = host in self.hosts, host
+        else:
+            listed, rule = "edit" in self.always, None
+        if self.mode == "plan" and kind != "web" and not (kind == "run" and permissions.is_safe(command)):
+            raise ToolError(PLAN_REFUSAL)
+        action = {**action, "kind": kind, "strict": strict, "rule": None if strict else rule}
+        free = self.mode == "yolo" or listed or (self.mode == "auto-edit" and kind != "run")
         if free and not strict:
             if self.on_auto is not None:
                 self.on_auto(action)
@@ -184,11 +213,32 @@ class Workspace:
         finally:
             self.waited += time.monotonic() - asked
         if answer == "always" and not strict:
-            self.always.add(kind)
+            self._remember(kind, command, rule)
             return
         if answer in ("yes", "always"):
             return
         raise ToolError("The user declined this action. Do not retry it; ask what they want instead.")
+
+    def _remember(self, kind: str, command: str, rule: str | None) -> None:
+        """An "always" answer: edits for this session, commands and hosts as a saved rule."""
+        if kind == "edit":
+            self.always.add("edit")
+        elif not rule:
+            self.always.add(command)  # no safe rule for it: this exact command, this session
+        else:
+            target, key = (self.rules, "allow_commands") if kind == "run" else (self.hosts, "allow_hosts")
+            if rule not in target:
+                target.append(rule)
+                if self.on_rule is not None:
+                    self.on_rule(key, rule)
+
+    def _changing(self, p: Path) -> None:
+        """Called just before a file is written, so its old content can be kept for undo."""
+        if self.on_change is not None:
+            try:
+                self.on_change(p, p.read_bytes() if p.is_file() else None)
+            except OSError:
+                pass
 
     # ---------------------------------------------------------------- read side
     def list_files(self, path: str = ".", depth: int = 2) -> str:
@@ -251,7 +301,7 @@ class Workspace:
         chunk = lines[offset - 1: offset - 1 + limit]
         if not chunk:
             return f"{self.rel(p)} has {len(lines)} lines; nothing at line {offset}."
-        body = "\n".join(f"{i:>6}\t{_clip(line)}" for i, line in enumerate(chunk, start=offset))
+        body = "\n".join(f"{i}\t{_clip(line)}" for i, line in enumerate(chunk, start=offset))
         end = offset + len(chunk) - 1
         note = ""
         if end < len(lines):
@@ -357,6 +407,7 @@ class Workspace:
             "tool": "write_file", "path": self.rel(p), "new": old is None,
             "diff": _diff(self.rel(p), old or "", content),
         }, strict=self._is_credential_path(p))
+        self._changing(p)
         p.parent.mkdir(parents=True, exist_ok=True)
         _atomic_write(p, content)
         verb = "Created" if old is None else "Wrote"
@@ -373,17 +424,67 @@ class Workspace:
             raise ToolError("old_string is empty. Use write_file to replace a whole file.")
         if old_string == new_string:
             raise ToolError("old_string and new_string are the same.")
-        hits = text.count(old_string)
-        if hits == 0:
-            raise ToolError(f"old_string was not found in {path}. Read the file again and copy the exact text, including spaces.")
-        if hits > 1 and not replace_all:
-            raise ToolError(f"old_string appears {hits} times in {path}. Add surrounding lines to make it unique, or set replace_all.")
-        new_text = text.replace(old_string, new_string) if replace_all else text.replace(old_string, new_string, 1)
+        if old_string not in text:
+            old_string, new_string = _without_line_numbers(old_string, new_string)
+        hits, how = text.count(old_string), ""
+        if hits:
+            if hits > 1 and not replace_all:
+                raise ToolError(f"old_string appears {hits} times in {path}. Add surrounding lines to make it unique, or set replace_all.")
+            new_text = text.replace(old_string, new_string) if replace_all else text.replace(old_string, new_string, 1)
+        else:
+            # Small models often get the indentation or the spaces at line ends wrong. If the
+            # lines match once when that is ignored, the edit is still unambiguous.
+            blocks = _find_block(text, old_string)
+            if not blocks:
+                raise ToolError(f"old_string was not found in {path}.{_closest(text, old_string)} "
+                                "Copy the exact text from read_file, without the line numbers.")
+            if len(blocks) > 1:
+                raise ToolError(f"old_string matches {len(blocks)} places in {path} when indentation is ignored. "
+                                "Add surrounding lines to make it unique.")
+            start, end = blocks[0]
+            new_text = text[:start] + _fit_block(text[start:end], old_string, new_string) + text[end:]
+            hits, how = 1, "; matched ignoring indentation"
         self._gate("edit", {"tool": "edit_file", "path": self.rel(p), "diff": _diff(self.rel(p), text, new_text)},
                    strict=self._is_credential_path(p))
+        self._changing(p)
         _atomic_write(p, new_text)
         n = hits if replace_all else 1
-        return f"Edited {self.rel(p)} ({n} change{'s' if n > 1 else ''})."
+        return f"Edited {self.rel(p)} ({n} change{'s' if n > 1 else ''}{how})."
+
+    # ---------------------------------------------------------------- tasks and the web
+    def update_tasks(self, tasks: str) -> str:
+        items = []
+        for line in (tasks or "").splitlines():
+            m = re.match(r"\s*(?:[-*]\s*|\d+[.)]\s*)?\[(.?)\]\s*(.+)", line)
+            mark, text = (m.group(1).lower(), m.group(2)) if m else (" ", line.strip(" \t-*"))
+            if text.strip():
+                status = "done" if mark == "x" else "active" if mark in (">", "~") else "pending"
+                items.append({"text": text.strip()[:200], "status": status})
+        if not items:
+            raise ToolError("Give one task per line: [x] done, [>] in progress, [ ] to do.")
+        self.tasks = items[:MAX_TASKS]
+        if self.on_tasks is not None:
+            self.on_tasks(self.tasks)
+        done = sum(t["status"] == "done" for t in self.tasks)
+        return f"Task list saved ({done} of {len(self.tasks)} done)."
+
+    def web_fetch(self, url: str, offset: int = 0) -> str:
+        from vesper import webtools as web
+
+        try:
+            url = web.check_url(url)
+            self._gate("web", {"tool": "web_fetch", "url": url, "host": web.host_of(url)})
+            return web.fetch(url, MAX_OUTPUT_CHARS, max(0, int(offset)))
+        except web.WebError as exc:
+            raise ToolError(str(exc)) from None
+
+    def web_search(self, query: str) -> str:
+        from vesper import webtools as web
+
+        try:
+            return web.search(query)
+        except web.WebError as exc:
+            raise ToolError(str(exc)) from None
 
     def run_command(self, command: str, timeout: int = 120) -> str:
         command = (command or "").strip()
@@ -534,31 +635,39 @@ class Workspace:
             with ws._turn:
                 if ws.stopped:
                     return "Error: the user stopped this request. Do not continue; wait for the next message."
+                name, key = fn.__name__, (fn.__name__, args)
+                if key in ws._seen:  # a model going in circles: answer in a few tokens, not the whole file again
+                    return REPEATED
+                if name in CHANGES_THINGS:
+                    ws._seen.clear()
                 try:
-                    return fn(*args)
+                    result = fn(*args)
                 except ToolError as exc:
                     return f"Error: {exc}"
                 except (OSError, ValueError) as exc:
                     return f"Error: {getattr(exc, 'strerror', None) or exc}"
+                if name in READ_ONLY:
+                    ws._seen.add(key)
+                return result
 
         @tool
         def list_files(path: str = ".", depth: int = 2) -> str:
-            """List files and folders (a tree) under `path`. Relative paths start at the working directory; absolute paths and ~ work too. Start here to see what is in a folder."""
+            """List files and folders under `path` as a tree."""
             return safe(ws.list_files, path, depth)
 
         @tool
         def read_file(path: str, offset: int = 1, limit: int = DEFAULT_READ_LINES) -> str:
-            """Read a text file with line numbers, or a PDF page by page (offset and limit count pages for PDFs). Read a file before editing it."""
+            """Read a text file with line numbers (`offset` = first line), or a PDF (`offset` and `limit` count pages)."""
             return safe(ws.read_file, path, offset, limit)
 
         @tool
         def glob(pattern: str, path: str = ".") -> str:
-            """Find files by name pattern under `path` (default: the working directory), e.g. '**/*.py' or 'docs/*.md'. Newest first."""
+            """Find files by name pattern, e.g. '**/*.py' or 'docs/*.md'. Newest first."""
             return safe(ws.glob, pattern, path)
 
         @tool
         def change_directory(path: str) -> str:
-            """Change the working directory, like `cd`. Use it when the user asks to go to, enter, open or leave a folder or project. Accepts relative paths, absolute paths, ~ and '..'. Later tool calls and commands run there."""
+            """Change the working directory, like `cd`. Later tool calls and commands run there."""
             return safe(ws.change_directory, path)
 
         @tool
@@ -568,25 +677,41 @@ class Workspace:
 
         @tool
         def search_docs(query: str) -> str:
-            """Semantic search over the PDF, Markdown and text documents under the working directory. Use it for questions about what the documents say; cite results as [file, page N]."""
+            """Semantic search over PDF, Markdown and text documents under the working directory. Cite results as [file, page N]."""
             return safe(ws.search_docs, query)
 
         @tool
         def write_file(path: str, content: str) -> str:
-            """Create a file or replace its whole content. Prefer edit_file for changes to an existing file."""
+            """Create a file or replace its whole content. Use edit_file to change part of a file."""
             return safe(ws.write_file, path, content)
 
         @tool
         def edit_file(path: str, old_string: str, new_string: str, replace_all: bool = False) -> str:
-            """Replace exact text in a file. old_string must match the file exactly (read it first) and be unique unless replace_all is true."""
+            """Replace text in a file. `old_string` is copied from the file (no line numbers) and must be unique unless replace_all is true."""
             return safe(ws.edit_file, path, old_string, new_string, replace_all)
 
         @tool
         def run_command(command: str, timeout: int = 120) -> str:
-            """Run a shell command in the working directory (tests, builds, git, scripts...). `cd` inside a command does not last: use change_directory to move. Output is cut after 20,000 characters; `timeout` is in seconds (max 600)."""
+            """Run a shell command in the working directory. `timeout` in seconds (max 600). Long output is cut in the middle."""
             return safe(ws.run_command, command, timeout)
 
-        return [list_files, read_file, glob, grep, search_docs, change_directory, write_file, edit_file, run_command]
+        @tool
+        def update_tasks(tasks: str) -> str:
+            """Show the user your task list. One task per line: '[x] done', '[>] in progress', '[ ] to do'. Send the whole list each time."""
+            return safe(ws.update_tasks, tasks)
+
+        @tool
+        def web_fetch(url: str, offset: int = 0) -> str:
+            """Read a web page as text. `offset` continues a long page."""
+            return safe(ws.web_fetch, url, offset)
+
+        @tool
+        def web_search(query: str) -> str:
+            """Search the web. Returns titles, addresses and snippets; read a result with web_fetch."""
+            return safe(ws.web_search, query)
+
+        return [list_files, read_file, glob, grep, search_docs, change_directory, write_file, edit_file,
+                run_command, update_tasks, web_fetch, web_search]
 
 
 # -------------------------------------------------------------------- helpers
@@ -641,6 +766,58 @@ def _atomic_write(p: Path, content: str) -> None:
     finally:
         if tmp.exists():
             tmp.unlink(missing_ok=True)
+
+
+LINE_NUMBER = re.compile(r"^ *\d+\t")
+
+
+def _without_line_numbers(old: str, new: str) -> tuple[str, str]:
+    """A model may copy read_file's "12<tab>" prefixes into an edit; drop them."""
+    lines = old.splitlines()
+    if not lines or not all(LINE_NUMBER.match(line) for line in lines if line.strip()):
+        return old, new
+    strip = lambda text: "\n".join(LINE_NUMBER.sub("", line) for line in text.split("\n"))  # noqa: E731
+    return strip(old), strip(new)
+
+
+def _indent(line: str) -> str:
+    return line[: len(line) - len(line.lstrip())]
+
+
+def _find_block(text: str, old: str) -> list[tuple[int, int]]:
+    """Places where the lines of `old` are in `text` when indentation and spaces at line ends
+    are ignored, as (start, end) offsets of whole lines."""
+    want = [line.strip() for line in old.strip("\n").splitlines()]
+    if not any(want):
+        return []
+    lines = text.splitlines(keepends=True)
+    starts = [0]
+    for line in lines:
+        starts.append(starts[-1] + len(line))
+    return [(starts[i], starts[i + len(want)]) for i in range(len(lines) - len(want) + 1)
+            if all(lines[i + j].strip() == want[j] for j in range(len(want)))]
+
+
+def _fit_block(found: str, old: str, new: str) -> str:
+    """`new`, indented like the block it replaces (`found`) instead of like `old`."""
+    have = next((_indent(line) for line in found.splitlines() if line.strip()), "")
+    gave = next((_indent(line) for line in old.splitlines() if line.strip()), "")
+    lines = new.strip("\n").splitlines()
+    if have.startswith(gave):
+        lines = [have[len(gave):] + line if line.strip() else line for line in lines]
+    elif gave.startswith(have):
+        extra = gave[len(have):]
+        lines = [line.removeprefix(extra) for line in lines]
+    ending = "\r\n" if found.endswith("\r\n") else "\n" if found.endswith("\n") else ""
+    return "\n".join(lines) + ending
+
+
+def _closest(text: str, old: str) -> str:
+    """A hint for a failed edit: the line of the file most like the first line of `old`."""
+    first = next((line.strip() for line in old.splitlines() if line.strip()), "")
+    lines = [line.strip() for line in text.splitlines()]
+    near = difflib.get_close_matches(first, lines, n=1, cutoff=0.6) if first else []
+    return f" The closest line is {lines.index(near[0]) + 1}: {_clip(near[0], 160)!r}." if near else ""
 
 
 def _diff(name: str, old: str, new: str, limit: int = 400) -> str:

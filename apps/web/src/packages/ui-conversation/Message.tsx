@@ -1,6 +1,7 @@
 import { memo, useMemo, useState, type MouseEvent } from 'react'
+import type { Task } from '../connection/api'
 import type { Msg, Thought } from '../store/store'
-import { retry, toast, useStore } from '../store/store'
+import { retry, runPlan, toast, undoChanges, useStore } from '../store/store'
 import { TOOL_VERBS, ToolRow } from './ToolRow'
 import { Icon } from '../ui-primitives/Icon'
 import { LogoMark } from '../ui-primitives/Logo'
@@ -65,6 +66,21 @@ function ThoughtBlock({ thought, live, expanded }: { thought: Thought; live: boo
   )
 }
 
+/** The agent's task list: what is done, what it is doing, what is left. */
+function TaskList({ items }: { items: Task[] }) {
+  const done = items.filter(t => t.status === 'done').length
+  return (
+    <div className="tasks" aria-label={`Tasks, ${done} of ${items.length} done`}>
+      {items.map((t, i) => (
+        <div key={i} className={`task ${t.status}`}>
+          <span className="mark" aria-hidden="true">{t.status === 'done' ? '✓' : t.status === 'active' ? '▸' : '○'}</span>
+          <span>{t.text}</span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 function UserMessage({ msg }: { msg: Msg }) {
   return (
     <div className="msg user">
@@ -78,6 +94,9 @@ function BotMessage({ msg, chatId, last }: { msg: Msg; chatId: string; last: boo
   const [open, setOpen] = useState(false)
   const [hl, setHl] = useState<string | null>(null)
   const transcript = useStore(s => s.transcript)
+  const planning = useStore(s => s.server?.settings.agent_mode === 'plan')
+  const busy = useStore(s => s.streamingId !== null)
+  const edited = !msg.undone && msg.tools.some(t => (t.name === 'edit_file' || t.name === 'write_file') && t.ok)
   // Text, thinking and tool calls in the order they happened.
   const parts = useMemo(() => {
     type Part = { kind: 'text'; html: string; key: string } | { kind: 'tool'; index: number; key: string }
@@ -139,6 +158,7 @@ function BotMessage({ msg, chatId, last }: { msg: Msg; chatId: string; last: boo
               dangerouslySetInnerHTML={{ __html: p.html }}
             />
           )))}
+        {!!msg.tasks?.length && <TaskList items={msg.tasks} />}
         {thinking && (
           <div className="thinking">
             <span className="shimmer">
@@ -166,13 +186,23 @@ function BotMessage({ msg, chatId, last }: { msg: Msg; chatId: string; last: boo
           <div className="usage">
             {seconds(msg.usage.seconds)}
             {msg.usage.tools ? ` · ${msg.usage.tools} tool call${msg.usage.tools === 1 ? '' : 's'}` : ''}
-            {` · ${msg.usage.estimated ? '~' : ''}${count(msg.usage.input)} in, ${msg.usage.estimated ? '~' : ''}${count(msg.usage.output)} out`}
+            {` · ${msg.usage.estimated ? '~' : ''}${count(msg.usage.input)} in${msg.usage.cached ? ` (${count(msg.usage.cached)} cached)` : ''}, ${msg.usage.estimated ? '~' : ''}${count(msg.usage.output)} out`}
+            {msg.undone ? ' · changes undone' : ''}
+          </div>
+        )}
+        {last && !msg.streaming && !msg.error && msg.plan && planning && !busy && (
+          <div className="plan-bar">
+            <button type="button" className="btn primary" onClick={() => void runPlan()}>Run this plan</button>
+            <span className="dim">or say what to change. Nothing has been changed yet.</span>
           </div>
         )}
         {!msg.streaming && (
           <div className={`actions${last ? ' show' : ''}`}>
             {msg.text && <button type="button" className="icon-btn sm" onClick={copy} title="Copy" aria-label="Copy answer"><Icon name="copy" size={15} /></button>}
             <button type="button" className="icon-btn sm" onClick={() => void retry(chatId, msg.id)} title="Retry" aria-label="Retry"><Icon name="retry" size={15} /></button>
+            {last && edited && !busy && (
+              <button type="button" className="icon-btn sm" onClick={() => void undoChanges()} title="Undo the file changes of this answer" aria-label="Undo file changes"><Icon name="undo" size={15} /></button>
+            )}
           </div>
         )}
       </div>

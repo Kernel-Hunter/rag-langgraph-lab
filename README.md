@@ -7,7 +7,8 @@
 **An AI coding agent for your terminal, with a desktop app.**
 
 Vesper reads, searches and edits files, runs commands when you allow it, and moves between
-folders and projects when you ask. Every conversation is saved, so you can resume it later
+folders and projects when you ask. It can plan before it acts, keeps a task list for longer
+jobs, and can undo its own edits. Every conversation is saved, so you can resume it later
 and see exactly what the agent did. Use it with 17 model providers, or offline with Ollama.
 
 [![tests](https://github.com/Kernel-Hunter/vesper/actions/workflows/ci.yml/badge.svg)](https://github.com/Kernel-Hunter/vesper/actions/workflows/ci.yml)
@@ -114,12 +115,62 @@ command line and all tool output, where the normal view prints one summary line 
 | `/verbose` or `Ctrl+O` | transcript view: thinking and full tool output while it works |
 | `/transcript` | print the whole conversation in detail: thinking, commands, edits, output |
 | `/status` | model, folder, session id, tokens used and how full the context is |
+| `/plan` | plan mode on or off: Vesper reads and proposes a plan, and works after you approve it |
+| `/undo` | put files back to how they were before Vesper's last changes |
+| `/compact` | replace the older part of the conversation with a summary to free context |
+| `/permissions` | list the commands and web sites that run without asking; remove one |
+| `/think` | how hard reasoning models think: `off`, `low`, `medium`, `high` |
 | `/model`, `/key` | switch provider and model, set the API key |
-| `/mode` or `Shift+Tab` | cycle `ask`, `auto-edit`, `yolo` |
+| `/mode` or `Shift+Tab` | cycle `ask`, `auto-edit`, `yolo`, `plan` |
 | `/docs` | re-read the documents in the folder |
 | `/app` | open the desktop app |
 | `/help`, `/exit` | help, quit (`Ctrl+D` works too) |
 | `Ctrl+C` | stop the answer and any command it started |
+
+### Plan, tasks and undo
+
+For a change you want to review first, turn on plan mode with `/plan` (or `Shift+Tab`).
+Vesper can still read, search and run read-only commands such as `git status`, but every
+edit and every other command is refused. It answers with a numbered plan and asks
+`Carry out this plan?`. Say yes and it goes back to the mode you were in and does the work.
+
+On a job with several steps Vesper keeps a task list and updates it as it goes:
+
+```text
+  ✔ Read the failing test
+  ▸ Fix the date parsing in utils.py
+  ☐ Run the tests
+```
+
+Before Vesper changes a file it keeps a copy of the old content. `/undo` puts back every
+file the last round of edits touched, including files it created, and tells the model on
+your next message. Undo covers files, so a command the agent ran (a `git commit`, a
+database migration) stays as it is.
+
+### The web
+
+`web_fetch` reads a page as plain text and `web_search` looks things up, for documentation,
+an error message or anything else that is not on your computer. In `ask` mode Vesper asks
+before it reads a site for the first time. Search works without a key through DuckDuckGo,
+which sometimes asks automated clients for a human check; Vesper does not try to get around
+that. For reliable search put a `BRAVE_API_KEY` or `TAVILY_API_KEY` in `~/.vesper/.env`.
+
+### Token use
+
+Vesper is built to spend few tokens per step:
+
+- The system prompt and the twelve tool descriptions together stay under 2,000 tokens.
+- With Claude models the prompt, the tools and the earlier conversation are cached, so
+  each step re-reads them at a fraction of the price. The answer footer shows it:
+  `4.1k in (3.6k cached)`.
+- Tool output is capped (long command output keeps its start and end, a file is read 400
+  lines at a time, a web page 12,000 characters at a time).
+- Asking again for something it already has costs one short line, because the same read
+  in the same turn is answered from memory.
+- The model is told to ask for independent things in one step, which saves whole round
+  trips.
+- A long conversation is summarized when it nears the model's limit (or when you type
+  `/compact`). Before that, a file that was read several times keeps only its last copy.
 
 One-shot mode prints the answer and exits, which is handy in scripts:
 
@@ -148,8 +199,8 @@ vesper logs 3f9a2c --full # the same, with tool arguments and output
 vesper logs --json        # one JSON object per event, for scripts
 ```
 
-The database is an ordinary SQLite file with three tables (`sessions`, `messages`,
-`events`), so `sqlite3 ~/.vesper/vesper.db` works on it too. The desktop app's Folder mode
+The database is an ordinary SQLite file with four tables (`sessions`, `messages`,
+`events`, and `checkpoints` for undo), so `sqlite3 ~/.vesper/vesper.db` works on it too. The desktop app's Folder mode
 reads and writes the same file, so a conversation started in the terminal can be continued
 in the app and the other way round.
 
@@ -165,6 +216,12 @@ The desktop app does the same work with a window around it. Open a folder from t
 top bar, and every tool call shows up inline: what the agent read, what it searched, and
 a colored diff with Allow, Always allow and Deny before any change. When the agent moves
 to another folder, the top bar follows it.
+
+The Plan button next to the model picker turns plan mode on: the answer is a plan with a
+"Run this plan" button under it. The task list is drawn as a checklist inside the answer,
+and an answer that changed files gets an undo button. `/undo`, `/compact` and `/plan` also
+work when typed into the message box. Settings, Folder lists the saved "always allow" rules
+and has the thinking level.
 
 The sidebar lists your chats and, under "Session history", the conversations saved by the
 terminal app. Click one to open it with every step it took, and your next message continues
@@ -193,6 +250,14 @@ Pick one with `/model`, or once with `--model provider/model`, for example
 The model needs tool calling. Larger models make better agents: a 7B local model handles
 reading, searching and small edits, and a hosted model is the better choice for long tasks.
 
+Small models make two mistakes that end a task early: they write a tool call as plain text,
+and they copy the text for an edit with the wrong indentation. Vesper repairs the first
+and accepts the second when the lines still match in exactly one place.
+
+`/think low`, `medium` or `high` asks a reasoning model to think before it answers and to
+show its thinking (Claude, OpenAI reasoning models, Ollama models that support it). `off`
+sends nothing extra and leaves it to the model.
+
 With Ollama, Vesper asks for a 16,384-token context window, because Ollama's default of
 4,096 is too small for an agent. Set `VESPER_OLLAMA_CTX` to change it (more context needs
 more memory).
@@ -208,6 +273,14 @@ An agent that can edit files and run commands should be boring about permissions
   shows the exact command line, and nothing happens until you say yes. `auto-edit` lets it
   edit files but still asks before commands. `yolo` never asks; use it only when you can
   afford to lose the files it can reach.
+- **Read-only commands do not ask.** `ls`, `pwd`, `git status`, `git diff`, `git log` and a
+  few more run without a question, as long as the command is one plain command with no
+  pipe, redirect or `;`.
+- **"Always allow" saves a narrow rule.** Answering `a` to `git commit -m "..."` saves the
+  prefix `git commit`, which then covers later `git commit` commands in every session. It
+  never covers a chained or piped command, and commands such as `rm`, `sudo`, `curl` or
+  `python script.py` cannot become a rule. `/permissions` lists and removes rules.
+- **Plan mode changes nothing.** Edits and commands are refused until you approve the plan.
 - **Some things always ask.** Commands that can wipe a disk or a home folder (`rm -rf /`,
   `mkfs`, `dd` to a device, `shutdown`) and edits inside credential folders (`~/.ssh`,
   `~/.aws`, `~/.gnupg` and similar) need a yes every time, in every mode, and "always
@@ -286,7 +359,7 @@ Document question answering also works from the command line: `vesper ask`, `ves
 model you picked in Vesper unless you pass `--llm`. `vesper eval` scores
 `eval/questions.yaml`, so you can compare chunk sizes, `k` and models with numbers.
 
-Releases: push a tag such as `v0.6.0` and GitHub Actions builds, smoke-tests and publishes
+Releases: push a tag such as `v0.7.0` and GitHub Actions builds, smoke-tests and publishes
 macOS, Linux and Windows builds with checksums.
 
 ## Contributing

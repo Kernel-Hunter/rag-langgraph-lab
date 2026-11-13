@@ -51,7 +51,7 @@ def make_client(server):
             engine = server.Engine()
             engine.rebuild()
             engine._llm = FakeListChatModel(responses=[ANSWER])
-            engine._llm_key = (engine.settings["provider"], engine.settings["model"])
+            engine._llm_key = (engine.settings["provider"], engine.settings["model"], engine.settings["thinking"])
         app = server.create_app(token, engine, allowed_hosts=allowed_hosts)
         c = TestClient(app, base_url=base_url)
         c.headers["X-Token"] = token

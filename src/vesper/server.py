@@ -28,6 +28,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from langchain_core.vectorstores import InMemoryVectorStore
+from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import MutableHeaders
 
 from vesper import providers as prov
@@ -55,7 +56,7 @@ MAX_QUESTION_CHARS = 8000
 MAX_MODEL_LEN = 200
 MAX_KEY_LEN = 500
 MODES = ("folder", "graph", "agent")
-AGENT_MODES = ("ask", "auto-edit", "yolo")
+AGENT_MODES = ("ask", "auto-edit", "yolo", "plan")
 MAX_SESSIONS = 30
 APPROVAL_TIMEOUT_S = 600
 MAX_HISTORY_TURNS = 40
@@ -86,6 +87,7 @@ DEFAULTS = {
     "check": False,
     "workspace": "",
     "agent_mode": "ask",
+    "thinking": "off",
 }
 
 
@@ -189,7 +191,11 @@ def _check_field(name: str, value) -> object:
         return value
     if name == "agent_mode":
         if value not in AGENT_MODES:
-            _bad("agent_mode must be ask, auto-edit or yolo.")
+            _bad("agent_mode must be ask, auto-edit, yolo or plan.")
+        return value
+    if name == "thinking":
+        if value not in prov.THINKING:
+            _bad("thinking must be off, low, medium or high.")
         return value
     if name == "workspace":
         value = _text_field(name, value, 4096)
@@ -508,9 +514,9 @@ class Engine:
     # ----- chat -----
     def llm(self):
         s = self.settings
-        key = (s["provider"], s["model"])
+        key = (s["provider"], s["model"], s["thinking"])
         if self._llm is None or self._llm_key != key:
-            self._llm = prov.get_llm(s["provider"], s["model"] or None)
+            self._llm = prov.get_llm(s["provider"], s["model"] or None, thinking=s["thinking"])
             self._llm_key = key
         return self._llm
 
@@ -592,17 +598,20 @@ class Engine:
         picked in the app, and the agent may move on from there itself."""
         from langchain_core.messages import AIMessage, HumanMessage
 
+        from vesper import permissions
         from vesper.coder import Session
         from vesper.workspace import Workspace
 
         s = self.settings
-        key = (s["provider"], s["model"], s["embeddings"])
+        key = (s["provider"], s["model"], s["embeddings"], s["thinking"])
+        rules, hosts = permissions.load_rules("allow_commands"), permissions.load_rules("allow_hosts")
         with self._sessions_lock:
             entry = self._sessions.get(chat_id)
             if entry is not None and entry["key"] == key:
                 self._sessions.move_to_end(chat_id)
                 ws = entry["session"].workspace
                 ws.mode = s["agent_mode"]
+                ws.rules, ws.hosts = rules, hosts  # rules saved in another chat or the terminal count here too
                 if entry["picked"] != s["workspace"]:  # the user opened another folder in the app
                     entry["picked"] = s["workspace"]
                     ws.change_directory(s["workspace"])
@@ -613,7 +622,8 @@ class Engine:
             if saved and Path(saved["cwd"]).is_dir():  # a saved conversation continues where it was
                 self.settings["workspace"] = saved["cwd"]
                 self.save()
-            ws = Workspace(Path(s["workspace"]), mode=s["agent_mode"],
+            ws = Workspace(Path(s["workspace"]), mode=s["agent_mode"], rules=rules, hosts=hosts,
+                           on_rule=lambda key, rule: permissions.save_rule(rule, key),
                            embeddings_factory=lambda: prov.get_embeddings(emb, s["embed_model"] or None))
             session = Session(self.llm(), ws, db, session_id=saved["id"] if saved else None, source="desktop",
                               provider=s["provider"], model=s["model"],
@@ -621,6 +631,7 @@ class Engine:
             if entry is not None:
                 old = entry["session"]  # same chat, new model: keep the conversation and its saved row
                 session.history, session.id, session.title, session._saved = old.history, old.id, old.title, old._saved
+                session._copies, ws.tasks = old._copies, old.workspace.tasks
             elif saved:
                 pass  # the history came from the database
             else:
@@ -718,6 +729,38 @@ class Engine:
         slot["answer"] = answer
         slot["event"].set()
         return True
+
+    def _idle_session(self, chat_id: str, session_id: str | None):
+        """(entry, session) of a chat that is not answering right now, with its lock held."""
+        if not self.settings["workspace"]:
+            raise HTTPException(409, "Open a folder first.")
+        try:
+            entry = self._folder_session(chat_id, [], session_id)
+        except Exception as exc:
+            raise HTTPException(409, friendly_error(exc, self.settings["provider"])) from exc
+        if not entry["lock"].acquire(blocking=False):
+            raise HTTPException(409, "This chat is still answering. Wait for it or stop it first.")
+        return entry, entry["session"]
+
+    def undo_chat(self, chat_id: str, session_id: str | None = None) -> list[str]:
+        """Put back the files the agent's latest edits changed. Returns their paths."""
+        entry, session = self._idle_session(chat_id, session_id)
+        try:
+            return session.undo()
+        except OSError as exc:
+            raise HTTPException(500, f"Could not put the files back: {exc}") from exc
+        finally:
+            entry["lock"].release()
+
+    def compact_chat(self, chat_id: str, session_id: str | None = None) -> dict:
+        """Summarize the older turns of a chat to free context."""
+        entry, session = self._idle_session(chat_id, session_id)
+        try:
+            before = session.tokens["context"]
+            done = session.compact()
+            return {"compacted": done, "before": before, "context": session.tokens["context"]}
+        finally:
+            entry["lock"].release()
 
     def forget_chat(self, chat_id: str) -> None:
         with self._sessions_lock:
@@ -863,6 +906,45 @@ def create_app(token: str, engine: Engine | None = None, allowed_hosts=None) -> 
         if not engine.answer_approval(aid, answer):
             raise HTTPException(404, "That request is no longer waiting.")
         return {"ok": True}
+
+    async def chat_ref(request: Request, chat_id: str) -> str | None:
+        """Checks a chat id from the path; returns the saved-session id from the body, if any."""
+        if not CHAT_ID.match(chat_id):
+            raise HTTPException(400, "chat_id must be 1-64 letters, digits, - or _.")
+        body = await json_body(request)
+        session_id = body.get("session_id") if isinstance(body, dict) else None
+        if session_id is not None and not (isinstance(session_id, str) and SESSION_ID.match(session_id)):
+            raise HTTPException(400, "session_id is not a session id.")
+        return session_id
+
+    @app.post("/api/chats/{chat_id}/undo", dependencies=[Depends(auth)])
+    async def undo(request: Request, chat_id: str):
+        session_id = await chat_ref(request, chat_id)
+        return {"paths": await run_in_threadpool(engine.undo_chat, chat_id, session_id)}
+
+    @app.post("/api/chats/{chat_id}/compact", dependencies=[Depends(auth)])
+    async def compact(request: Request, chat_id: str):
+        session_id = await chat_ref(request, chat_id)
+        return await run_in_threadpool(engine.compact_chat, chat_id, session_id)
+
+    @app.get("/api/permissions", dependencies=[Depends(auth)])
+    def get_permissions():
+        from vesper import permissions
+
+        return {"commands": permissions.load_rules("allow_commands"), "hosts": permissions.load_rules("allow_hosts"),
+                "safe": list(permissions.SAFE_COMMANDS)}
+
+    @app.post("/api/permissions/remove", dependencies=[Depends(auth)])
+    async def remove_permission(request: Request):
+        from vesper import permissions
+
+        body = await json_body(request)
+        kind = body.get("kind") if isinstance(body, dict) else None
+        rule = body.get("rule") if isinstance(body, dict) else None
+        if kind not in ("commands", "hosts") or not isinstance(rule, str) or len(rule) > 500:
+            raise HTTPException(400, "Send kind (commands or hosts) and the rule to remove.")
+        permissions.remove_rule(rule, "allow_commands" if kind == "commands" else "allow_hosts")
+        return get_permissions()
 
     @app.get("/api/sessions", dependencies=[Depends(auth)])
     def sessions(limit: int = 100):

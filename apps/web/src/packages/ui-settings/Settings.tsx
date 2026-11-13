@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type DragEvent, type ReactNode } from 'react'
-import type { AgentMode, Provider } from '../connection/api'
+import { api, type AgentMode, type Permissions, type Provider, type Thinking } from '../connection/api'
 import {
-  canPickFolder, closeSettings, getState, openFolder, pickFolder, removeDoc, saveSettings, setAppearance, setSettingsTab,
+  canPickFolder, closeSettings, getState, openFolder, pickFolder, removeDoc, saveSettings, setAgentMode, setAppearance, setSettingsTab,
   uploadFiles, useStore, type SettingsTab,
 } from '../store/store'
 import { EFFECTS, type EffectChoice, type Phosphor, type ThemeChoice } from '../ui-theme/appearance'
@@ -30,7 +30,35 @@ const AGENT_MODES: { id: AgentMode; label: string; hint: string }[] = [
   { id: 'ask', label: 'Ask first', hint: 'Reads freely. Asks before every edit and every command.' },
   { id: 'auto-edit', label: 'Auto-edit', hint: 'Edits files without asking. Still asks before running commands.' },
   { id: 'yolo', label: 'Full access', hint: 'Edits and runs commands without asking. Only when you can afford to lose the files it can reach.' },
+  { id: 'plan', label: 'Plan', hint: 'Reads and proposes a plan. Changes nothing until you approve the plan.' },
 ]
+const THINKING: Thinking[] = ['off', 'low', 'medium', 'high']
+
+/** Commands and web sites the user answered "always allow" to. */
+function Rules() {
+  const [perms, setPerms] = useState<Permissions | null>(null)
+  useEffect(() => { api.permissions().then(setPerms, () => undefined) }, [])
+  if (!perms) return null
+  const rows = [...perms.commands.map(rule => ({ kind: 'commands' as const, rule })), ...perms.hosts.map(rule => ({ kind: 'hosts' as const, rule }))]
+  return (
+    <Section title="Runs without asking" desc={`Rules you saved with "Always allow". Read-only commands such as ${perms.safe.slice(0, 4).join(', ')} never ask.`}>
+      {rows.length === 0 ? <p className="set-desc">No saved rules yet.</p> : (
+        <div className="rule-list">
+          {rows.map(r => (
+            <div key={`${r.kind}:${r.rule}`} className="rule-row">
+              <code>{r.rule}</code>
+              <span className="dim">{r.kind === 'commands' ? 'command' : 'web site'}</span>
+              <button type="button" className="icon-btn sm" aria-label={`Remove the rule ${r.rule}`} title="Remove"
+                onClick={() => { api.removePermission(r.kind, r.rule).then(setPerms, () => undefined) }}>
+                <Icon name="trash" size={14} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </Section>
+  )
+}
 
 function FolderTab() {
   const server = useStore(s => s.server)
@@ -52,9 +80,20 @@ function FolderTab() {
         <div className="mode-list">
           {AGENT_MODES.map(m => (
             <button type="button" key={m.id} className={`mode-card${s.agent_mode === m.id ? ' on' : ''}${m.id === 'yolo' ? ' risky' : ''}`}
-              aria-pressed={s.agent_mode === m.id} onClick={() => void saveSettings({ agent_mode: m.id })}>
-              <Icon name={m.id === 'yolo' ? 'warn' : 'shield'} size={15} />
+              aria-pressed={s.agent_mode === m.id} onClick={() => void setAgentMode(m.id)}>
+              <Icon name={m.id === 'yolo' ? 'warn' : m.id === 'plan' ? 'list' : 'shield'} size={15} />
               <span><strong>{m.label}</strong><small>{m.hint}</small></span>
+            </button>
+          ))}
+        </div>
+      </Section>
+      <Rules />
+      <Section title="Thinking" desc="How hard reasoning models think before they answer. Off lets the model decide. Higher levels are slower and use more tokens; the model must support reasoning.">
+        <div className="segmented" role="group" aria-label="Thinking">
+          {THINKING.map(level => (
+            <button type="button" key={level} className={s.thinking === level ? 'on' : ''} aria-pressed={s.thinking === level}
+              onClick={() => void saveSettings({ thinking: level })}>
+              {level[0]!.toUpperCase() + level.slice(1)}
             </button>
           ))}
         </div>

@@ -13,6 +13,9 @@ const TOOLS: Record<string, { verb: string; icon: IconName; arg: string }> = {
   write_file: { verb: 'Write', icon: 'edit', arg: 'path' },
   edit_file: { verb: 'Edit', icon: 'edit', arg: 'path' },
   run_command: { verb: 'Run', icon: 'terminal', arg: 'command' },
+  web_fetch: { verb: 'Fetch', icon: 'globe', arg: 'url' },
+  web_search: { verb: 'Search the web', icon: 'globe', arg: 'query' },
+  update_tasks: { verb: 'Tasks', icon: 'list', arg: '' },
 }
 
 export const TOOL_VERBS: Record<string, string> = Object.fromEntries(Object.entries(TOOLS).map(([name, t]) => [name, t.verb]))
@@ -30,6 +33,8 @@ function summary(step: ToolStep): string {
     case 'list_files':
     case 'glob': return out.startsWith('No ') ? short(out, 100) : `${lines.length} item${lines.length === 1 ? '' : 's'}`
     case 'grep': return out.startsWith('No ') ? short(out, 100) : `${lines.length} match${lines.length === 1 ? '' : 'es'}`
+    case 'web_fetch': return `${out.length.toLocaleString()} characters`
+    case 'web_search': return `${lines.filter(l => /^\d+\. /.test(l)).length} results`
     case 'run_command': return short(lines[0] ?? 'done', 100)
     default: return short(lines[0] ?? 'done', 120)
   }
@@ -67,9 +72,20 @@ function Approval({ step, chatId, msgId }: { step: ToolStep; chatId: string; msg
   const a = step.approval!
   const answer = (value: ApprovalAnswer): void => { void respond(chatId, msgId, a.id, value) }
   const waiting = !a.answer
+  const always = a.kind === 'edit' ? { label: 'Always allow edits', title: 'Edit files without asking for the rest of this chat' }
+    : a.kind === 'web' ? { label: `Always allow ${a.host ?? 'this site'}`, title: 'Read pages from this site without asking, from now on' }
+      : a.rule ? { label: `Always allow ${a.rule}`, title: `Run commands that start with "${a.rule}" without asking, from now on. Remove the rule in Settings.` }
+        : { label: 'Always allow this command', title: 'Run this exact command without asking for the rest of this chat' }
   return (
     <div className={`approval${waiting ? ' waiting' : ''}`} role={waiting ? 'alertdialog' : undefined} aria-label="Approve this action">
-      {a.kind === 'run'
+      {a.kind === 'web'
+        ? (
+          <>
+            <div className="approval-title"><Icon name="globe" size={14} />Read a web page</div>
+            <pre className="diff cmd">{a.url}</pre>
+          </>
+        )
+        : a.kind === 'run'
         ? (
           <>
             <div className="approval-title"><Icon name="terminal" size={14} />Run a command{a.cwd ? <span className="dim"> in {a.cwd}</span> : null}</div>
@@ -89,15 +105,14 @@ function Approval({ step, chatId, msgId }: { step: ToolStep; chatId: string; msg
             {a.strict
               ? <span className="dim">Needs a yes every time.</span>
               : (
-                <button type="button" className="btn" disabled={a.sending} onClick={() => answer('always')}
-                  title={a.kind === 'run' ? 'Run commands without asking for the rest of this chat' : 'Edit files without asking for the rest of this chat'}>
-                  Always allow {a.kind === 'run' ? 'commands' : 'edits'}
+                <button type="button" className="btn" disabled={a.sending} onClick={() => answer('always')} title={always.title}>
+                  {always.label}
                 </button>
               )}
             <button type="button" className="btn ghost danger" disabled={a.sending} onClick={() => answer('no')}>Deny</button>
           </div>
         )
-        : <div className={`approval-result ${a.answer === 'no' ? 'bad' : 'ok'}`}>{a.answer === 'no' ? 'Denied' : a.answer === 'always' ? 'Allowed for this chat' : 'Allowed'}</div>}
+        : <div className={`approval-result ${a.answer === 'no' ? 'bad' : 'ok'}`}>{a.answer === 'no' ? 'Denied' : a.answer === 'always' ? 'Always allowed' : 'Allowed'}</div>}
     </div>
   )
 }
@@ -132,7 +147,7 @@ export function ToolRow({ step, chatId, msgId, expanded = false }: { step: ToolS
       {open && !(step.approval && step.approval.answer === undefined) && <Detail step={step} />}
       {open && step.approval?.answer && (
         <div className={`approval-result ${step.approval.answer === 'no' ? 'bad' : 'ok'}`}>
-          {step.approval.answer === 'no' ? 'Denied' : step.approval.answer === 'always' ? 'Allowed for this chat' : 'Allowed'}
+          {step.approval.answer === 'no' ? 'Denied' : step.approval.answer === 'always' ? 'Always allowed' : 'Allowed'}
         </div>
       )}
       {open && step.output && <pre className="tool-out">{short(step.output, 4000)}</pre>}

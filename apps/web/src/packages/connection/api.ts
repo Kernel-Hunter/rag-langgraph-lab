@@ -24,18 +24,24 @@ export interface Settings {
   check: boolean
   workspace: string
   agent_mode: AgentMode
+  thinking: Thinking
 }
 
-export type AgentMode = 'ask' | 'auto-edit' | 'yolo'
+export type AgentMode = 'ask' | 'auto-edit' | 'yolo' | 'plan'
+export type Thinking = 'off' | 'low' | 'medium' | 'high'
 
 export interface ApprovalRequest {
   id: string
-  kind: 'edit' | 'run'
+  kind: 'edit' | 'run' | 'web'
   tool: string
   path?: string
   diff?: string
   command?: string
   cwd?: string
+  url?: string
+  host?: string
+  /** What "always allow" would save: a command prefix or a web host. Null: this exact command, this chat. */
+  rule?: string | null
   /** Risky enough to need a yes every time: no "always allow". */
   strict?: boolean
 }
@@ -83,9 +89,23 @@ export type TurnPart =
 
 export type Turn = { role: 'user'; text: string } | { role: 'assistant'; parts: TurnPart[] }
 
+/** One line of the agent's task list. */
+export interface Task {
+  text: string
+  status: 'pending' | 'active' | 'done'
+}
+
+/** Commands and web sites that run without asking. */
+export interface Permissions {
+  commands: string[]
+  hosts: string[]
+  safe: string[]
+}
+
 export interface Usage {
   input: number
   output: number
+  cached?: number
   context: number
   seconds: number
   tools: number
@@ -110,7 +130,8 @@ export type StreamEvent =
   | { event: 'tool_start'; data: { id: string | null; name: string; args: Record<string, unknown> } }
   | { event: 'tool_end'; data: { id: string | null; name: string; output: string; ok: boolean; ms?: number | null } }
   | { event: 'output'; data: { line: string } }
-  | { event: 'auto'; data: { kind: 'edit' | 'run'; tool: string; path?: string; diff?: string } }
+  | { event: 'auto'; data: { kind: 'edit' | 'run' | 'web'; tool: string; path?: string; diff?: string } }
+  | { event: 'tasks'; data: { items: Task[] } }
   | { event: 'usage'; data: Usage }
   | { event: 'cwd'; data: { path: string } }
   | { event: 'notice'; data: { text: string } }
@@ -183,6 +204,15 @@ export const api = {
   deleteSession: async (id: string): Promise<void> => {
     await request(`/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' })
   },
+  /** Puts back the files the agent's latest edits changed. */
+  undo: async (chatId: string, sessionId?: string): Promise<string[]> =>
+    ((await (await request(`/api/chats/${encodeURIComponent(chatId)}/undo`, { method: 'POST', json: { session_id: sessionId } })).json()) as { paths: string[] }).paths,
+  /** Replaces the older turns of a chat with a summary. */
+  compact: async (chatId: string, sessionId?: string): Promise<{ compacted: boolean; before: number; context: number }> =>
+    (await request(`/api/chats/${encodeURIComponent(chatId)}/compact`, { method: 'POST', json: { session_id: sessionId } })).json(),
+  permissions: async (): Promise<Permissions> => (await request('/api/permissions')).json(),
+  removePermission: async (kind: 'commands' | 'hosts', rule: string): Promise<Permissions> =>
+    (await request('/api/permissions/remove', { method: 'POST', json: { kind, rule } })).json(),
 
   /** Streams one answer. Calls onEvent for each event; resolves when the stream ends. */
   async chat(

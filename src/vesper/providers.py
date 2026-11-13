@@ -183,7 +183,10 @@ def _fake_chat_model():
             if not self.folder:
                 return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
             last = messages[-1] if messages else None
-            if not isinstance(last, ToolMessage):
+            if not isinstance(last, ToolMessage) and "task list" in str(getattr(last, "content", "")).lower():
+                msg = AIMessage(content="", tool_calls=[{"name": "update_tasks", "id": "fake-tasks", "args": {
+                    "tasks": "[x] Understand the request\n[>] Look at the folder\n[ ] Write the note"}}])
+            elif not isinstance(last, ToolMessage) or last.name == "update_tasks":
                 msg = AIMessage(content="<think>The user wants something done in this folder. "
                                         "I will list it, then write a short note.</think>Let me look at the folder first.",
                                 tool_calls=[{"name": "list_files", "args": {"path": "."}, "id": "fake-list"}])
@@ -197,7 +200,17 @@ def _fake_chat_model():
     return FakeChat(messages=itertools.repeat(AIMessage(content=FAKE_ANSWER)))
 
 
-def get_llm(provider: str | None = None, model: str | None = None, temperature: float = 0):
+THINKING = ("off", "low", "medium", "high")
+# Claude models from before adaptive thinking: they take a fixed thinking budget instead.
+OLD_CLAUDE = ("claude-3", "claude-haiku-4", "claude-sonnet-4-0", "claude-sonnet-4-5", "claude-opus-4-0",
+              "claude-opus-4-1", "claude-opus-4-5", "claude-sonnet-4-2", "claude-opus-4-2")
+
+
+def get_llm(provider: str | None = None, model: str | None = None, temperature: float = 0,
+            thinking: str = "off"):
+    """The chat model. `thinking` (low | medium | high) asks reasoning models to think and to
+    show it; "off" sends nothing extra, so each model does what it does by default."""
+    thinking = thinking if thinking in THINKING else "off"
     if fake_llm_enabled():
         return _fake_chat_model()
     pid = (provider or os.getenv("LLM_PROVIDER", "openai")).lower()
@@ -208,21 +221,41 @@ def get_llm(provider: str | None = None, model: str | None = None, temperature: 
     if p.kind == "anthropic":
         from langchain_anthropic import ChatAnthropic
 
-        return ChatAnthropic(model=model, temperature=temperature, api_key=_key(p))
+        # No temperature: current Claude models reject any value but their default.
+        extra: dict = {}
+        if thinking != "off" and model.startswith(OLD_CLAUDE):
+            extra = {"thinking": {"type": "enabled", "budget_tokens": 4096}, "max_tokens": 16_000}
+        elif thinking != "off":
+            extra = {"thinking": {"type": "adaptive", "display": "summarized"}, "output_config": {"effort": thinking}}
+        return ChatAnthropic(model=model, api_key=_key(p), **extra)
     if p.id == "ollama":
         from langchain_ollama import ChatOllama
 
         # The native API, not the OpenAI-compatible one: only it accepts a context size.
         base = (_base_url(p) or "").rstrip("/").removesuffix("/v1")
-        return ChatOllama(model=model, temperature=temperature, base_url=base, num_ctx=ollama_context_tokens())
+        return ChatOllama(model=model, temperature=temperature, base_url=base, num_ctx=ollama_context_tokens(),
+                          reasoning=True if thinking != "off" else None)
     from langchain_openai import ChatOpenAI
 
+    if thinking != "off":  # reasoning models take an effort level and no temperature
+        return ChatOpenAI(model=model, base_url=_base_url(p), api_key=_key(p) or "not-needed",
+                          reasoning_effort=thinking)
     return ChatOpenAI(
         model=model,
         temperature=temperature,
         base_url=_base_url(p),
         api_key=_key(p) or "not-needed",  # local servers ignore it
     )
+
+
+def agent_middleware(llm) -> list:
+    """Provider-specific helpers for the agent loop. For Claude: prompt caching, so the system
+    prompt, the tool list and the earlier conversation are billed at a fraction on every step."""
+    if type(llm).__name__ != "ChatAnthropic":
+        return []
+    from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
+
+    return [AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore")]
 
 
 class LocalEmbeddings(Embeddings):

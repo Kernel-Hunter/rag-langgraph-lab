@@ -1,10 +1,11 @@
 """Session history in SQLite: `~/.vesper/vesper.db`.
 
-Three tables:
+Four tables:
 
     sessions   one row per conversation (title, working directory, model, when)
     messages   the conversation itself, as LangChain messages, so a session can be resumed exactly
     events     the activity log: every prompt, tool call, result, error and token count
+    checkpoints  what a file held before the agent changed it, so a turn's edits can be undone
 
 The terminal app, one-shot mode and the desktop app's Folder mode all write here, so
 `vesper sessions`, `/resume` and `/logs` see everything.
@@ -21,7 +22,7 @@ from pathlib import Path
 
 from langchain_core.messages import BaseMessage, messages_from_dict, messages_to_dict
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
     id          TEXT PRIMARY KEY,
@@ -50,11 +51,19 @@ CREATE TABLE IF NOT EXISTS events (
     ms          INTEGER,                            -- how long a tool call or a turn took
     detail      TEXT NOT NULL DEFAULT '{}'          -- JSON: arguments, output, counts...
 );
+CREATE TABLE IF NOT EXISTS checkpoints (
+    session_id  TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    turn        INTEGER NOT NULL,                   -- when the turn started, in milliseconds
+    path        TEXT NOT NULL,
+    before      BLOB,                               -- the old content; NULL when the file did not exist
+    PRIMARY KEY (session_id, turn, path)
+);
 CREATE INDEX IF NOT EXISTS events_by_session ON events(session_id, id);
 CREATE INDEX IF NOT EXISTS sessions_by_time ON sessions(updated_at DESC);
 """
 MAX_DETAIL_CHARS = 20_000  # per logged value; the conversation itself is never cut
 TITLE_CHARS = 80
+KEEP_CHECKPOINT_TURNS = 20
 
 
 def new_id() -> str:
@@ -161,6 +170,30 @@ class Store:
             except Exception:  # noqa: BLE001 - one unreadable row should not lose the session
                 continue
         return out
+
+    # ---------------------------------------------------------------- undo copies
+    def add_checkpoint(self, session_id: str, turn: int, path: str | Path, before: bytes | None) -> None:
+        """Keep what `path` held before a turn changed it. The first copy of a turn wins."""
+        with self._lock, self._db:
+            self._db.execute("INSERT OR IGNORE INTO checkpoints (session_id, turn, path, before) VALUES (?, ?, ?, ?)",
+                             (session_id, int(turn), str(path), before))
+            # Only the last few turns can be undone; older copies would just grow the file.
+            self._db.execute(
+                "DELETE FROM checkpoints WHERE session_id = ? AND turn NOT IN (SELECT DISTINCT turn FROM checkpoints "
+                "WHERE session_id = ? ORDER BY turn DESC LIMIT ?)", (session_id, session_id, KEEP_CHECKPOINT_TURNS))
+
+    def checkpoints(self, session_id: str) -> list[tuple[int, str, bytes | None]]:
+        """(turn, path, old bytes) of the latest turn that changed files."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT turn, path, before FROM checkpoints WHERE session_id = ? AND turn = "
+                "(SELECT MAX(turn) FROM checkpoints WHERE session_id = ?) ORDER BY path", (session_id, session_id),
+            ).fetchall()
+        return [(r["turn"], r["path"], None if r["before"] is None else bytes(r["before"])) for r in rows]
+
+    def delete_checkpoints(self, session_id: str, turn: int) -> None:
+        with self._lock, self._db:
+            self._db.execute("DELETE FROM checkpoints WHERE session_id = ? AND turn = ?", (session_id, int(turn)))
 
     # ---------------------------------------------------------------- activity log
     def add_event(self, session_id: str, kind: str, name: str = "", detail: dict | None = None,

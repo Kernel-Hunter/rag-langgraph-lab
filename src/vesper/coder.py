@@ -12,26 +12,33 @@ Events from `Session.ask()`:
     ("tool_end", {"id", "name", "output", "ok", "ms"})
     ("sources", {"query", "items"})                  document passages found by search_docs
     ("cwd", {"path"})                                the working directory changed
+    ("tasks", {"items": [{"text", "status"}]})       the agent's task list changed
     ("notice", {"text"})                             something the user should know (context trimmed)
-    ("usage", {"input", "output", "context", "seconds", "tools"})   once, at the end of the turn
+    ("usage", {"input", "output", "cached", "context", "seconds", "tools"})   once, at the end of the turn
     ("done", {})
 """
 
 from __future__ import annotations
 
+import ast
+import json
+import re
 import time
 from collections.abc import Iterator
+from pathlib import Path
 
 from langchain.agents import create_agent
+from langchain.agents.middleware import wrap_model_call
 from langchain_core.messages import (
     AIMessage,
     AIMessageChunk,
     BaseMessage,
     HumanMessage,
+    SystemMessage,
     ToolMessage,
 )
 
-from vesper.prompts import agent_system_prompt
+from vesper.prompts import COMPACT_PROMPT, agent_system_prompt
 from vesper.store import Store, new_id
 from vesper.workspace import Workspace
 
@@ -40,7 +47,15 @@ DEFAULT_CONTEXT_TOKENS = 120_000  # assumed context window when the provider doe
 HISTORY_SHARE = 0.6              # part of the window the history may fill; the rest is prompt, tools and the answer
 CHARS_PER_TOKEN = 3.5            # rough, on the safe side for code
 OLD_OUTPUT_CHARS = 1_200         # tool output from earlier turns is cut to this when space runs out
+RECENT_OUTPUTS = 3               # tool results of the current turn that are never shortened
+KEEP_TURNS = 2                   # latest turns kept word for word when older ones are summarized
+MAX_SUMMARY_INPUT_CHARS = 60_000
+MAX_CHECKPOINT_BYTES = 5_000_000  # larger files are changed without an undo copy
 INTERRUPTED = "Interrupted by the user before this finished."
+SUMMARY_OPEN, SUMMARY_ACK = "<summary>", "Understood. I will continue from this summary."
+SUPERSEDED = "[This file was read again later in the conversation; use the newer result.]"
+RETRY_HINT = ("Your last reply was empty or was a tool call whose arguments were not valid JSON. "
+              "Reply again: either call the tool with valid JSON arguments or answer in text.")
 
 
 def text_of(content) -> str:
@@ -130,13 +145,21 @@ def transcript(messages: list[BaseMessage]) -> list[dict]:
     tools: dict[str, dict] = {}
     for m in messages:
         if isinstance(m, HumanMessage):
-            turns.append({"role": "user", "text": text_of(m.content).split("\n\n<file path=")[0].strip()})
+            text = text_of(m.content)
+            if text.startswith(SUMMARY_OPEN):  # older turns, replaced by a summary (Session.compact)
+                body = text.removeprefix(SUMMARY_OPEN).split("</summary>")[0].strip()
+                turns.append({"role": "assistant", "parts": [
+                    {"type": "text", "text": "**Summary of the earlier conversation**\n\n" + body}]})
+            else:
+                turns.append({"role": "user", "text": re.split(r"\n\n<(?:file path=|note>)", text)[0].strip()})
             continue
         if not turns or turns[-1]["role"] != "assistant":
             turns.append({"role": "assistant", "parts": []})
         parts = turns[-1]["parts"]
         if isinstance(m, AIMessage):
             inline, answer = split_thinking(text_of(m.content))
+            if answer == SUMMARY_ACK:
+                continue
             thought = (reasoning_of(m) + ("\n" if reasoning_of(m) and inline else "") + inline).strip()
             if thought:
                 parts.append({"type": "reasoning", "text": thought})
@@ -155,37 +178,161 @@ def transcript(messages: list[BaseMessage]) -> list[dict]:
     return turns
 
 
-def build_coder(llm, workspace: Workspace):
-    return create_agent(llm, tools=workspace.tools(), system_prompt=agent_system_prompt(workspace.root))
+def build_coder(llm, workspace: Workspace, middleware=()):
+    plan = workspace.mode == "plan"
+    return create_agent(llm, tools=workspace.tools(), system_prompt=agent_system_prompt(workspace.root, plan),
+                        middleware=list(middleware))
 
 
 def _size(m: BaseMessage) -> int:
     return len(text_of(m.content)) + sum(len(str(c.get("args", ""))) + 40 for c in (getattr(m, "tool_calls", None) or []))
 
 
-def fit_history(messages: list[BaseMessage], budget_chars: int) -> tuple[list[BaseMessage], bool]:
-    """Make a conversation fit the model's context window.
+def _shorter(m: ToolMessage, body: str) -> ToolMessage:
+    return ToolMessage(content=body, tool_call_id=m.tool_call_id, name=m.name, id=m.id, status=m.status)
 
-    First the bulky tool output of earlier turns is shortened, then whole oldest turns are
-    dropped. The latest turn is never touched. Returns (messages, whether anything was cut).
-    """
-    if sum(map(_size, messages)) <= budget_chars:
-        return messages, False
-    starts = [i for i, m in enumerate(messages) if isinstance(m, HumanMessage)]
-    last_turn = starts[-1] if starts else len(messages)
-    out = list(messages)
-    for i in range(last_turn):
+
+def _clip_output(m: BaseMessage, limit: int = OLD_OUTPUT_CHARS) -> BaseMessage:
+    body = text_of(m.content) if isinstance(m, ToolMessage) else ""
+    if len(body) <= limit:
+        return m
+    return _shorter(m, body[:limit] + f"\n[... {len(body) - limit} characters of this output trimmed to save context]")
+
+
+def _drop_repeated_reads(messages: list[BaseMessage]) -> list[BaseMessage]:
+    """When the same part of a file was read more than once, only the last result is kept."""
+    calls = {c.get("id"): (c["name"], json.dumps(c.get("args", {}), sort_keys=True, default=str))
+             for m in messages if isinstance(m, AIMessage) for c in (m.tool_calls or [])}
+    out, newer = list(messages), set()
+    for i in range(len(out) - 1, -1, -1):
         m = out[i]
-        if isinstance(m, ToolMessage) and len(text_of(m.content)) > OLD_OUTPUT_CHARS:
-            body = text_of(m.content)
-            out[i] = ToolMessage(content=body[:OLD_OUTPUT_CHARS] + f"\n[... {len(body) - OLD_OUTPUT_CHARS} characters of older output trimmed]",
-                                 tool_call_id=m.tool_call_id, name=m.name, id=m.id, status=m.status)
-    while sum(map(_size, out)) > budget_chars:
+        call = calls.get(m.tool_call_id) if isinstance(m, ToolMessage) else None
+        if call is None or call[0] != "read_file" or text_of(m.content).startswith(("Error:", "You already")):
+            continue
+        if call in newer:
+            out[i] = _shorter(m, SUPERSEDED)
+        newer.add(call)
+    return out
+
+
+def fit_history(messages: list[BaseMessage], budget_chars: int) -> tuple[list[BaseMessage], bool]:
+    """Make a conversation fit the model's context window, cheapest cut first.
+
+    1. a file read several times keeps only its last result
+    2. bulky tool output of earlier turns is shortened
+    3. whole oldest turns are dropped (`Session` summarizes them first when it can); a summary
+       at the start of the conversation is never dropped
+    4. tool output of the current turn is shortened: first all but the most recent results,
+       then all but the last one, then the last one too
+
+    Returns (messages, whether anything was cut).
+    """
+    def total(msgs) -> int:
+        return sum(map(_size, msgs))
+
+    if total(messages) <= budget_chars:
+        return messages, False
+    out = _drop_repeated_reads(messages)
+    if total(out) <= budget_chars:
+        return out, True
+    starts = [i for i, m in enumerate(out) if isinstance(m, HumanMessage)]
+    last_turn = starts[-1] if starts else len(out)
+    out = [_clip_output(m) if i < last_turn else m for i, m in enumerate(out)]
+    summary = 2 if len(out) > 1 and text_of(out[0].content).startswith(SUMMARY_OPEN) else 0
+    head, out = out[:summary], out[summary:]
+    while total(head) + total(out) > budget_chars:
         starts = [i for i, m in enumerate(out) if isinstance(m, HumanMessage)]
         if len(starts) < 2:
             break
         out = out[starts[1]:]
+    out = head + out
+    results = [i for i, m in enumerate(out) if isinstance(m, ToolMessage)]
+    for keep in (RECENT_OUTPUTS, 1):
+        if total(out) <= budget_chars:
+            break
+        for i in results[:-keep]:
+            out[i] = _clip_output(out[i])
+    if results and total(out) > budget_chars:
+        out[results[-1]] = _clip_output(out[results[-1]], max(OLD_OUTPUT_CHARS, budget_chars // 2))
     return out, True
+
+
+def _loose_json(text):
+    """JSON the way small models write it: single quotes, True/None, a trailing comma."""
+    if not isinstance(text, str):
+        return text
+    text = text.strip()
+    for load in (json.loads, ast.literal_eval, lambda t: json.loads(re.sub(r",\s*([}\]])", r"\1", t))):
+        try:
+            return load(text)
+        except (ValueError, SyntaxError, MemoryError, RecursionError):
+            continue
+    return None
+
+
+def _call_from(data, names: set[str]) -> dict | None:
+    """{"name", "args"} when `data` is a tool call in one of the shapes models use for it."""
+    if not isinstance(data, dict):
+        return None
+    inner = data.get("function") if isinstance(data.get("function"), dict) else data
+    name = inner.get("name") or inner.get("tool") or inner.get("tool_name")
+    args = next((inner[k] for k in ("arguments", "parameters", "args", "input") if k in inner), None)
+    args = _loose_json(args)
+    if name in names and isinstance(args, dict):
+        return {"name": name, "args": args}
+    return None
+
+
+def repair_tool_calls(msg: AIMessage, names: set[str]) -> AIMessage | None:
+    """A reply that was meant as a tool call but did not arrive as one, made into one.
+
+    Small local models do two things: they send arguments that are almost JSON, and they write
+    the call as text (`{"name": "read_file", "arguments": {...}}`, sometimes inside
+    <tool_call> tags or a code fence) instead of using the tool-call channel. Without this the
+    turn would simply end. Returns None when there is nothing to repair.
+    """
+    if msg.tool_calls:
+        return None
+    found = []
+    for bad in msg.invalid_tool_calls or []:
+        call = _call_from({"name": bad.get("name"), "args": bad.get("args") or "{}"}, names)
+        if call:
+            found.append({**call, "id": bad.get("id")})
+    if not found:
+        _, text = split_thinking(text_of(msg.content))
+        text = text.strip()
+        blobs = re.findall(r"<tool_call>(.*?)</tool_call>", text, re.S)
+        if not blobs:
+            fenced = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", text, re.S)
+            blobs = [fenced.group(1)] if fenced else [text] if text.startswith("{") and text.endswith("}") else []
+        for blob in blobs:
+            data = _loose_json(blob)
+            for item in data if isinstance(data, list) else [data]:
+                call = _call_from(item, names)
+                if call:
+                    found.append({**call, "id": None})
+    if not found:
+        return None
+    calls = [{"name": c["name"], "args": c["args"], "id": c["id"] or f"call_{new_id()}", "type": "tool_call"}
+             for c in found]
+    return AIMessage(content="", tool_calls=calls, id=msg.id, usage_metadata=msg.usage_metadata,
+                     response_metadata=msg.response_metadata)
+
+
+def _render(messages: list[BaseMessage]) -> str:
+    """A conversation as plain text for the summarizer, with long parts cut."""
+    lines = []
+    for m in messages:
+        body = text_of(m.content).strip()
+        if isinstance(m, HumanMessage):
+            lines.append("USER: " + body[:3000])
+        elif isinstance(m, AIMessage):
+            if body:
+                lines.append("ASSISTANT: " + split_thinking(body)[1][:3000])
+            lines += [f"TOOL CALL: {c['name']} {json.dumps(c.get('args', {}), default=str)[:300]}" for c in m.tool_calls or []]
+        elif isinstance(m, ToolMessage):
+            lines.append("RESULT: " + body[:500])
+    return "\n".join(lines)[-MAX_SUMMARY_INPUT_CHARS:]
 
 
 def repair_history(messages: list[BaseMessage]) -> list[BaseMessage]:
@@ -223,13 +370,18 @@ class Session:
         self.id = session_id or new_id()
         self.title = ""
         self._saved = False                     # a row exists in the store
-        self.tokens = {"input": 0, "output": 0, "context": 0}
+        self.tokens = {"input": 0, "output": 0, "cached": 0, "context": 0}
         self._llm = llm
         self._agent = None
-        self._agent_cwd = None
+        self._agent_key = None
         self._pending: list[tuple[str, dict]] = []  # events raised by tools while the agent runs
+        self._turn_id = 0                           # groups the file copies kept for undo
+        self._copies: list[tuple[int, str, bytes | None]] = []  # (turn, path, old bytes), newest last
+        self._undone: list[str] = []                # files put back by undo, to tell the model next turn
         workspace.on_sources = self._on_sources
         workspace.on_cwd = self._on_cwd
+        workspace.on_change = self._on_change
+        workspace.on_tasks = lambda items: self._pending.append(("tasks", {"items": [dict(t) for t in items]}))
         if store is not None and session_id:
             row = store.get_session(session_id)
             if row:
@@ -249,15 +401,135 @@ class Session:
         """Start a new conversation (a new session id); the old one stays in the store."""
         self.history, self.title, self._saved = [], "", False
         self.id = new_id()
-        self.tokens = {"input": 0, "output": 0, "context": 0}
+        self.tokens = {"input": 0, "output": 0, "cached": 0, "context": 0}
+        self._copies, self._undone, self.workspace.tasks = [], [], []
 
     def _agent_for_cwd(self):
-        # The system prompt names the working directory and the project's instruction file,
-        # so the agent is rebuilt when the directory changes.
-        if self._agent is None or self._agent_cwd != self.workspace.root:
-            self._agent = build_coder(self._llm, self.workspace)
-            self._agent_cwd = self.workspace.root
+        # The system prompt names the working directory, the project's instruction file and
+        # whether plan mode is on, so the agent is rebuilt when one of them changes.
+        key = (self.workspace.root, self.workspace.mode == "plan")
+        if self._agent is None or self._agent_key != key:
+            self._agent = build_coder(self._llm, self.workspace, self._middleware())
+            self._agent_key = key
         return self._agent
+
+    def _budget(self) -> int:
+        """Characters of conversation the model's window has room for."""
+        return int(self.context_tokens * HISTORY_SHARE * CHARS_PER_TOKEN)
+
+    def _middleware(self) -> list:
+        """What happens around every model call inside a turn."""
+        from vesper import providers as prov
+
+        session = self
+        names = {t.name for t in self.workspace.tools()}
+
+        @wrap_model_call
+        def guard(request, handler):
+            # A long turn can outgrow the window on its own (many files read in one go).
+            messages, cut = fit_history(request.messages, session._budget())
+            if cut:
+                session.workspace._seen.clear()  # trimmed results may need to be read again
+                request = request.override(messages=messages)
+            response = handler(request)
+            for _attempt in range(2):
+                msg = response if isinstance(response, AIMessage) else next(
+                    (m for m in reversed(getattr(response, "result", [])) if isinstance(m, AIMessage)), None)
+                if msg is None:
+                    return response
+                fixed = repair_tool_calls(msg, names)
+                if fixed is not None:
+                    return fixed
+                broken = bool(msg.invalid_tool_calls) or not (msg.tool_calls or text_of(msg.content).strip() or reasoning_of(msg))
+                if not broken or _attempt:
+                    return response
+                response = handler(request.override(messages=[*request.messages, HumanMessage(RETRY_HINT)]))
+            return response
+
+        return [guard, *prov.agent_middleware(self._llm)]
+
+    # ---------------------------------------------------------------- context
+    def compact(self, keep_turns: int = KEEP_TURNS) -> bool:
+        """Replace older turns with a summary written by the model. Returns whether it did.
+
+        Unlike dropping turns, the model keeps what was decided, which files were touched and
+        what is still open. The latest `keep_turns` turns stay word for word.
+        """
+        starts = [i for i, m in enumerate(self.history) if isinstance(m, HumanMessage)]
+        keep_turns = min(keep_turns, len(starts) - 1) if len(starts) > 1 else 0
+        cut = starts[len(starts) - keep_turns] if keep_turns else len(self.history)
+        older = self.history[:cut]
+        if not older or (len(older) == 2 and text_of(older[0].content).startswith(SUMMARY_OPEN)):
+            return False
+        try:
+            reply = None  # streamed: some providers refuse a long non-streaming request
+            for piece in self._llm.stream([SystemMessage(COMPACT_PROMPT), HumanMessage(_render(older))]):
+                reply = piece if reply is None else reply + piece
+        except Exception as exc:  # noqa: BLE001 - the caller falls back to trimming
+            self._log("error", detail={"error": f"compact: {type(exc).__name__}: {exc}"[:2000]})
+            return False
+        summary = split_thinking(text_of(reply.content))[1].strip() if reply is not None else ""
+        if not summary:
+            return False
+        before = sum(map(_size, self.history))
+        self.history = [HumanMessage(f"{SUMMARY_OPEN}\n{summary}\n</summary>"), AIMessage(SUMMARY_ACK), *self.history[cut:]]
+        used = getattr(reply, "usage_metadata", None) or {}
+        self.tokens["input"] += used.get("input_tokens", 0)
+        self.tokens["output"] += used.get("output_tokens", 0)
+        self.tokens["context"] = int(sum(map(_size, self.history)) / CHARS_PER_TOKEN)
+        self._log("compact", detail={"before": int(before / CHARS_PER_TOKEN), "after": self.tokens["context"]})
+        self._save()
+        return True
+
+    def _save(self) -> None:
+        if self.store is not None and self._saved:
+            try:
+                self.store.save_messages(self.id, self.history)
+            except Exception:  # noqa: BLE001
+                pass
+
+    # ---------------------------------------------------------------- undo
+    def _on_change(self, path: Path, before: bytes | None) -> None:
+        """A tool is about to write `path`: keep what was there (once per turn and file)."""
+        if any(turn == self._turn_id and p == str(path) for turn, p, _ in self._copies):
+            return
+        if before is not None and len(before) > MAX_CHECKPOINT_BYTES:
+            return
+        self._copies.append((self._turn_id, str(path), before))
+        if self.store is not None and self._saved:
+            try:
+                self.store.add_checkpoint(self.id, self._turn_id, path, before)
+            except Exception:  # noqa: BLE001 - a missing undo copy must not stop the edit
+                pass
+
+    def undo(self) -> list[str]:
+        """Put files back to how they were before the latest turn that changed any.
+
+        Returns the paths restored (empty when there is nothing to undo). Commands the agent
+        ran are not undone. The model is told about it with the next message.
+        """
+        rows = self._copies
+        if self.store is not None and self._saved:
+            rows = self.store.checkpoints(self.id)
+        if not rows:
+            return []
+        turn = max(r[0] for r in rows)
+        paths = []
+        for _, path, before in [r for r in rows if r[0] == turn]:
+            target = Path(path)
+            if before is None:
+                target.unlink(missing_ok=True)
+            else:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(before)
+            paths.append(path)
+        self._copies = [r for r in self._copies if r[0] != turn]
+        if self.store is not None and self._saved:
+            self.store.delete_checkpoints(self.id, turn)
+        self.workspace._seen.clear()
+        self._undone += paths
+        self._log("undo", detail={"paths": paths})
+        return paths
 
     def _on_sources(self, query: str, docs: list) -> None:
         self._pending.append(("sources", {"query": query, "items": [
@@ -295,11 +567,18 @@ class Session:
     def ask(self, text: str, shown: str | None = None) -> Iterator[tuple[str, dict]]:
         """`shown` is what the user typed when `text` also carries attached files (for titles and logs)."""
         self.workspace.stopped = False
+        self.workspace._seen.clear()
         self._ensure_saved(shown or text)
         self._log("prompt", detail={"text": shown or text})
         started = time.monotonic()
-        budget = int(self.context_tokens * HISTORY_SHARE * CHARS_PER_TOKEN)
-        history, cut = fit_history(self.history, budget)
+        self._turn_id = max(int(time.time() * 1000), self._turn_id + 1)
+        if self._undone:  # the model still remembers its edits; tell it they are gone
+            text += ("\n\n<note>The user undid your changes to these files; they are back to how they were "
+                     "before: " + ", ".join(self._undone) + "</note>")
+            self._undone = []
+        if sum(map(_size, self.history)) > self._budget() and self.compact():
+            yield "notice", {"text": "The conversation is long, so older turns were summarized to save context."}
+        history, cut = fit_history(self.history, self._budget())
         if cut:
             yield "notice", {"text": "The conversation is long, so older tool output and turns were trimmed to fit the model."}
         messages = [*history, HumanMessage(text)]
@@ -379,11 +658,7 @@ class Session:
             # Keep what happened even if the turn was stopped or failed half way.
             if final:
                 self.history = repair_history(list(final))
-                if self.store is not None and self._saved:
-                    try:
-                        self.store.save_messages(self.id, self.history)
-                    except Exception:  # noqa: BLE001
-                        pass
+                self._save()
         usage = self._usage(final or [], len(messages), started + (self.workspace.waited - waited_before), tools)
         self._log("usage", detail=usage, ms=int(usage["seconds"] * 1000))
         yield "usage", usage
@@ -406,6 +681,7 @@ class Session:
         new = [m for m in final[sent:] if isinstance(m, AIMessage)]
         inp = sum((m.usage_metadata or {}).get("input_tokens", 0) for m in new)
         out = sum((m.usage_metadata or {}).get("output_tokens", 0) for m in new)
+        cached = sum(((m.usage_metadata or {}).get("input_token_details") or {}).get("cache_read", 0) or 0 for m in new)
         estimated = not (inp or out)
         if estimated:
             out = int(sum(_size(m) for m in new) / CHARS_PER_TOKEN)
@@ -414,6 +690,7 @@ class Session:
         context = last.get("input_tokens", 0) + last.get("output_tokens", 0) or int(sum(map(_size, final)) / CHARS_PER_TOKEN)
         self.tokens["input"] += inp
         self.tokens["output"] += out
+        self.tokens["cached"] += cached
         self.tokens["context"] = context
-        return {"input": inp, "output": out, "context": context, "estimated": estimated,
+        return {"input": inp, "output": out, "cached": cached, "context": context, "estimated": estimated,
                 "seconds": round(time.monotonic() - started, 1), "tools": tools}

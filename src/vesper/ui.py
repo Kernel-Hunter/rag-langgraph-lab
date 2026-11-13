@@ -35,17 +35,19 @@ MODES = {
     "ask": "asks before edits and commands",
     "auto-edit": "edits files freely, asks before commands",
     "yolo": "never asks (careful)",
+    "plan": "reads and plans; changes nothing until you approve the plan",
 }
 TOOL_LABELS = {
     "list_files": "List", "read_file": "Read", "glob": "Find", "grep": "Search",
     "search_docs": "Search docs", "change_directory": "Go to", "write_file": "Write",
-    "edit_file": "Edit", "run_command": "Run",
+    "edit_file": "Edit", "run_command": "Run", "update_tasks": "Tasks", "web_fetch": "Fetch",
+    "web_search": "Search the web",
 }
 # The argument that says most about a tool call.
 MAIN_ARG = {
     "read_file": "path", "write_file": "path", "edit_file": "path", "list_files": "path",
     "change_directory": "path", "glob": "pattern", "grep": "pattern", "search_docs": "query",
-    "run_command": "command",
+    "run_command": "command", "web_fetch": "url", "web_search": "query",
 }
 LIVE_OUTPUT_LINES = 5     # lines of a running command kept on screen
 LIVE_THOUGHT_LINES = 4    # lines of the model's thinking kept on screen while it thinks
@@ -230,10 +232,21 @@ def turn_footer(usage: dict, context_tokens: int) -> Text:
     if usage["tools"]:
         parts.append(f"{usage['tools']} tool call{'s' if usage['tools'] != 1 else ''}")
     approx = "~" if usage.get("estimated") else ""
-    parts.append(f"{approx}{fmt_tokens(usage['input'])} in, {approx}{fmt_tokens(usage['output'])} out")
+    cached = f" ({fmt_tokens(usage['cached'])} cached)" if usage.get("cached") else ""
+    parts.append(f"{approx}{fmt_tokens(usage['input'])} in{cached}, {approx}{fmt_tokens(usage['output'])} out")
     if context_tokens:
         parts.append(f"context {min(100, round(100 * usage['context'] / context_tokens))}%")
     return Text("  ✓ " + " · ".join(parts), style=MUTED)
+
+
+def tasks_block(items: list[dict]) -> Text:
+    """The agent's task list: done, in progress, to do."""
+    out = Text()
+    for n, item in enumerate(items):
+        mark, style = {"done": ("✔", MUTED), "active": ("▸", f"bold {ACCENT}")}.get(item.get("status"), ("☐", ""))
+        out.append(("\n" if n else "") + f"  {mark} ", style=OK if item.get("status") == "done" else style)
+        out.append(str(item.get("text", "")), style=style)
+    return out
 
 
 # ---------------------------------------------------------------- streaming renderer

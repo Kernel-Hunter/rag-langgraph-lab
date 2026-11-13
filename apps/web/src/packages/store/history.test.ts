@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { turnsToMessages } from './history'
+import { parseTasks, turnsToMessages } from './history'
 
 describe('turnsToMessages', () => {
   it('rebuilds a saved conversation in order: thinking, tool calls, text', () => {
@@ -22,5 +22,17 @@ describe('turnsToMessages', () => {
     expect(bot.thoughts).toEqual([{ at: 0, n: 0, text: 'look first' }])
     expect(bot.tools.map(t => [t.name, t.at, t.n, t.ok])).toEqual([['read_file', 0, 1, true], ['run_command', 9, 2, false]])
     expect(bot.tools[1]!.output).toMatch(/Stopped/)
+  })
+})
+
+describe('parseTasks', () => {
+  it('reads the marks a model writes', () => {
+    expect(parseTasks('[x] read the code\n- [>] fix the bug\n2. [ ] run the tests\nplain line')).toEqual([
+      { text: 'read the code', status: 'done' },
+      { text: 'fix the bug', status: 'active' },
+      { text: 'run the tests', status: 'pending' },
+      { text: 'plain line', status: 'pending' },
+    ])
+    expect(parseTasks(undefined)).toEqual([])
   })
 })

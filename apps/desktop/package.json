@@ -1,7 +1,7 @@
 {
   "name": "vesper-desktop",
   "productName": "Vesper",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "private": true,
   "description": "Vesper desktop app: an AI agent for your folders and documents.",
   "author": "Karim Masmoudi",

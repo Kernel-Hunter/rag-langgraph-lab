@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from 'react'
 import {
-  api, ApiError, type ApprovalAnswer, type ApprovalRequest, type ChatTurn, type SavedSession, type ServerState, type Source,
-  type StreamEvent, type Usage,
+  api, ApiError, type AgentMode, type ApprovalAnswer, type ApprovalRequest, type ChatTurn, type SavedSession, type ServerState,
+  type Source, type StreamEvent, type Task, type Usage,
 } from '../connection/api'
 import { applyAppearance, loadAppearance, saveAppearance, type Appearance } from '../ui-theme/appearance'
 import { blankMsg, MAX_TOOL_OUTPUT, turnsToMessages, uid } from './history'
@@ -42,6 +42,12 @@ export interface Msg {
   tools: ToolStep[]
   thoughts: Thought[]
   usage?: Usage
+  /** The agent's task list, as last updated in this answer. */
+  tasks?: Task[]
+  /** Written in plan mode: the answer is a plan waiting for a yes. */
+  plan?: boolean
+  /** The files this answer changed were put back. */
+  undone?: boolean
   /** The tool call the model is writing right now ("Edit, 340 characters"). Not saved. */
   draft?: { name: string; chars: number }
   streaming?: boolean
@@ -130,6 +136,9 @@ function loadChats(): Chat[] {
             ? m.thoughts.filter(t => t && typeof t.text === 'string').map(t => ({ at: Number(t.at) || 0, n: Number(t.n) || 0, text: t.text }))
             : [],
           usage: m.usage && typeof m.usage === 'object' ? m.usage : undefined,
+          tasks: Array.isArray(m.tasks) ? m.tasks.filter(t => t && typeof t.text === 'string') : undefined,
+          plan: m.plan === true || undefined,
+          undone: m.undone === true || undefined,
         })),
       }]
     }).slice(0, MAX_CHATS)
@@ -363,7 +372,8 @@ export async function send(text: string): Promise<void> {
     .filter(m => m.text && !m.error)
     .map(m => ({ role: m.role, text: m.text }))
   const user: Msg = { ...blankMsg('user'), text: question }
-  const bot: Msg = { ...blankMsg('bot'), streaming: true }
+  const settings = state.server?.settings
+  const bot: Msg = { ...blankMsg('bot'), streaming: true, plan: (settings?.mode === 'folder' && settings.agent_mode === 'plan') || undefined }
   const sessionId = state.chats.find(c => c.id === chatId)?.sessionId
   const cid = chatId
   set(st => ({
@@ -418,8 +428,15 @@ export async function send(text: string): Promise<void> {
         case 'tool_draft':
           patchMessage(cid, bot.id, () => ({ draft: e.data }))
           break
+        case 'tasks':
+          patchMessage(cid, bot.id, () => ({ tasks: e.data.items }))
+          break
         case 'tool_start':
           flush()
+          if (e.data.name === 'update_tasks') { // drawn as the task list, not as a tool row
+            patchMessage(cid, bot.id, () => ({ draft: undefined }))
+            break
+          }
           patchMessage(cid, bot.id, m => ({
             draft: undefined,
             tools: [...m.tools, {
@@ -530,6 +547,67 @@ export async function openSession(id: string): Promise<void> {
   } catch (e) {
     toast(e instanceof Error ? e.message : String(e), 'error')
     void loadHistory()
+  }
+}
+
+// ---------------- plan, undo, context ----------------
+let beforePlan: AgentMode = 'ask'
+
+/** Changes what the agent may do alone. Remembers the mode to return to after plan mode. */
+export async function setAgentMode(mode: AgentMode): Promise<boolean> {
+  const now = state.server?.settings.agent_mode
+  if (mode === 'plan' && now && now !== 'plan') beforePlan = now
+  return saveSettings({ agent_mode: mode })
+}
+export const togglePlan = (): Promise<boolean> =>
+  setAgentMode(state.server?.settings.agent_mode === 'plan' ? beforePlan : 'plan')
+
+/** The user read the plan and said yes: leave plan mode and let the agent do it. */
+export async function runPlan(): Promise<void> {
+  if (state.streamingId) return
+  if (await setAgentMode(beforePlan)) await send('The plan is approved. Carry it out now.')
+}
+
+/** Puts back the files the agent's latest edits changed in the open chat. */
+export async function undoChanges(): Promise<void> {
+  const chat = currentChat(state)
+  if (!chat || state.streamingId) return
+  try {
+    const paths = await api.undo(chat.id, chat.sessionId)
+    if (!paths.length) { toast('Nothing to undo in this chat.'); return }
+    const changed = (m: Msg): boolean => m.tools.some(t => (t.name === 'edit_file' || t.name === 'write_file') && t.ok)
+    const target = [...chat.messages].reverse().find(m => m.role === 'bot' && !m.undone && changed(m))
+    if (target) patchMessage(chat.id, target.id, () => ({ undone: true }))
+    persistChats()
+    toast(`${paths.length} file${paths.length === 1 ? '' : 's'} put back: ${paths.map(folderName).slice(0, 4).join(', ')}${paths.length > 4 ? ', …' : ''}`)
+  } catch (e) {
+    toast(e instanceof Error ? e.message : String(e), 'error')
+  }
+}
+
+/** Replaces the older turns of the open chat with a summary, to free context. */
+export async function compactChat(): Promise<void> {
+  const chat = currentChat(state)
+  if (!chat || state.streamingId) return
+  toast('Summarizing the conversation…')
+  try {
+    const r = await api.compact(chat.id, chat.sessionId)
+    toast(r.compacted ? `Older turns are now a summary (about ${r.before} → ${r.context} tokens).` : 'Nothing to summarize yet.')
+  } catch (e) {
+    toast(e instanceof Error ? e.message : String(e), 'error')
+  }
+}
+
+/** Slash commands typed in the composer. Returns true when the text was one. */
+export function runCommand(text: string): boolean {
+  switch (text.trim().toLowerCase()) {
+    case '/undo': void undoChanges(); return true
+    case '/compact': void compactChat(); return true
+    case '/plan': void togglePlan(); return true
+    case '/new': case '/clear': newChat(); return true
+    case '/transcript': case '/verbose': toggleTranscript(); return true
+    case '/permissions': case '/think': openSettings('folder'); return true
+    default: return false
   }
 }
 

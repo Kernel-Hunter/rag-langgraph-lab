@@ -14,9 +14,11 @@ with page citations) is a retrieval pipeline built with LangChain 1.x and LangGr
 ## Map
 
 - `src/vesper/prompts.py`: every prompt sent to a model. The agent's system prompt is general on purpose: no topic, course or company in it. Project-specific guidance comes from the user's `VESPER.md` / `AGENTS.md` file, which `agent_system_prompt` appends.
-- `src/vesper/workspace.py`: the tools (`list_files`, `read_file`, `glob`, `grep`, `search_docs`, `change_directory`, `write_file`, `edit_file`, `run_command`). `Workspace.root` is the working directory and can move; paths are not confined to it. Every write or command goes through `_gate`.
-- `src/vesper/coder.py`: `Session`, the `create_agent` loop over those tools. Saves history to the store, logs events, trims long histories (`fit_history`), repairs interrupted ones (`repair_history`). Yields token, reasoning, tool_draft, tool_start, tool_end, sources, cwd, notice, usage and done events. `transcript()` turns saved messages into turns both front ends draw.
-- `src/vesper/store.py`: `Store`, the SQLite database at `~/.vesper/vesper.db` (tables `sessions`, `messages`, `events`).
+- `src/vesper/workspace.py`: the tools (`list_files`, `read_file`, `glob`, `grep`, `search_docs`, `change_directory`, `write_file`, `edit_file`, `run_command`, `update_tasks`, `web_fetch`, `web_search`). `Workspace.root` is the working directory and can move; paths are not confined to it. Every write, command or page fetch goes through `_gate`; in plan mode it refuses them.
+- `src/vesper/permissions.py`: which commands run without asking: the read-only list, and the prefix rules an "always" answer saves in `config.json`.
+- `src/vesper/webtools.py`: fetch a page as text and search the web (standard library only).
+- `src/vesper/coder.py`: `Session`, the `create_agent` loop over those tools. Saves history to the store, logs events, summarizes long histories (`compact`) and trims what still does not fit (`fit_history`), repairs interrupted ones (`repair_history`), turns tool calls a small model wrote as text into real ones (`repair_tool_calls`), and keeps file copies for `undo`. Yields token, reasoning, tool_draft, tool_start, tool_end, tasks, sources, cwd, notice, usage and done events. `transcript()` turns saved messages into turns both front ends draw.
+- `src/vesper/store.py`: `Store`, the SQLite database at `~/.vesper/vesper.db` (tables `sessions`, `messages`, `events`, `checkpoints`).
 - `src/vesper/tui.py`: the `vesper` terminal app: session loop, slash commands, one-shot mode, `vesper sessions`, `vesper logs`. The agent runs in a worker thread; the main thread draws and asks.
 - `src/vesper/ui.py`: how the terminal app looks (colors, banner, tool lines, streaming Markdown, session and log tables). No model or file access.
 - `src/vesper/onboarding.py`: `config.json`, the model and key pickers, the first-run and trust prompts.
@@ -51,6 +53,7 @@ rag-lab eval --label my-change
 - A new provider goes in `providers.py` only. Other modules must not change.
 - When a change can affect answer quality (prompt, chunk size, k, model), run `rag-lab eval` before and after and paste both scores in the PR.
 - A tool must never write a file or run a command without `_gate`. Dangerous commands and credential folders are `strict` (they ask in every mode); secret files are never read. Add a test for any new tool.
+- Tokens are a budget. Tool descriptions stay one sentence, tool output is capped, and the fixed part of the system prompt comes before the per-session part so providers can cache it. Measure before adding to either.
 - Keep prompts general. Nothing about a specific subject, school or company goes into `prompts.py`.
 - Tests must not touch the real home folder. `conftest.py` points `HOME` and `VESPER_HOME` at temporary folders; use absolute paths under `tmp_path`.
 - Keep tests offline. Use `DeterministicFakeEmbedding` and `FakeListChatModel`, never a real API in `tests/`.

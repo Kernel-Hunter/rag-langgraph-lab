@@ -75,6 +75,7 @@ from vesper.ui import (
     summarize_args,
     summarize_output,
     tail_path,
+    tasks_block,
     tool_end_line,
     tool_start_line,
     turn_footer,
@@ -93,18 +94,24 @@ SLASH = {
     "/verbose": "transcript view: show thinking and full tool output while working (ctrl+o)",
     "/transcript": "print this whole conversation in detail: thinking, commands, edits, output",
     "/status": "model, folder, session and token use",
+    "/plan": "plan mode on or off: Vesper reads and proposes a plan, you approve it, then it works",
+    "/undo": "put files back to how they were before Vesper's last changes",
+    "/compact": "summarize the older part of this conversation to free context",
+    "/permissions": "commands and sites that run without asking (/permissions remove N)",
+    "/think": "how hard reasoning models think: off | low | medium | high",
     "/model": "switch provider and model",
     "/key": "set the API key for the current provider",
-    "/mode": "ask | auto-edit | yolo",
+    "/mode": "ask | auto-edit | yolo | plan",
     "/docs": "re-read documents for search_docs",
     "/app": "open the desktop app",
     "/exit": "quit (or ctrl+d)",
 }
-ALIASES = {"/clear": "/new", "/quit": "/exit", "/q": "/exit", "/history": "/sessions", "/log": "/logs"}
+ALIASES = {"/clear": "/new", "/quit": "/exit", "/q": "/exit", "/history": "/sessions", "/log": "/logs",
+           "/rewind": "/undo", "/allow": "/permissions", "/thinking": "/think"}
 SHORTCUTS = [
     ("@path", "attach a file to your message"),
     ("!command", "run a shell command yourself (!cd folder moves Vesper too)"),
-    ("shift+tab", "cycle mode: ask → auto-edit → yolo"),
+    ("shift+tab", "cycle mode: ask → auto-edit → yolo → plan"),
     ("ctrl+o", "transcript view on or off (thinking and full tool output)"),
     ("esc then enter", "new line"),
     ("ctrl+c", "stop the answer · twice to quit"),
@@ -130,7 +137,7 @@ def open_store():
 def make_llm(cfg: dict):
     from vesper import providers as prov
 
-    return prov.get_llm(cfg.get("provider"), cfg.get("model") or None)
+    return prov.get_llm(cfg.get("provider"), cfg.get("model") or None, thinking=cfg.get("thinking") or "off")
 
 
 def context_tokens(cfg: dict) -> int:
@@ -164,12 +171,15 @@ class App:
         self._stop = threading.Event()
         self._worker: threading.Thread | None = None
         self._shown_cwd = root
+        self._before_plan = "ask"   # the mode to go back to when a plan is approved
+        self._finished = False      # the last turn ran to its end (not stopped, no error)
 
     @property
     def root(self) -> Path:
         return self.workspace.root if self.workspace is not None else self._start_root
 
     def build(self, resume: dict | None = None) -> None:
+        from vesper import permissions
         from vesper import providers as prov
         from vesper.workspace import Workspace
 
@@ -183,6 +193,8 @@ class App:
             self._start_root, approve=self._approve_from_tool, mode=self.mode, embeddings_factory=embeddings,
             on_auto=lambda action: self._events.put(("auto", action)),
             on_output=lambda line: self._events.put(("output", {"line": line})),
+            rules=permissions.load_rules("allow_commands"), hosts=permissions.load_rules("allow_hosts"),
+            on_rule=lambda key, rule: permissions.save_rule(rule, key),
         )
         self.new_session(resume)
 
@@ -206,23 +218,28 @@ class App:
 
     def approve(self, action: dict) -> str:
         self.renderer.stop()
-        strict = action.get("strict")
-        if action["kind"] == "edit":
+        strict, kind, rule = action.get("strict"), action["kind"], action.get("rule")
+        if kind == "edit":
             title = ("Create " if action.get("new") else "Edit ") + action.get("path", "")
             console.print(diff_panel(action, title, ERR if strict else WARN))
+            always = "always allow edits this session"
+        elif kind == "web":
+            console.print(Panel(Text(action.get("url", ""), style="bold"), title="Read a web page", title_align="left",
+                                border_style=WARN, box=box.ROUNDED))
+            always = f"always allow {rule}"
         else:
             body = Group(Text("$ " + action.get("command", ""), style="bold"),
                          Text("in " + short_path(action.get("cwd", self.root)), style=MUTED))
             console.print(Panel(body, title="Run a command", title_align="left",
                                 border_style=ERR if strict else WARN, box=box.ROUNDED))
+            always = f"always allow `{rule}` commands" if rule else "always allow this exact command this session"
         if strict:
             note("This can do serious damage or touches credentials, so it needs a yes every time.", ERR)
-        what = "edits" if action["kind"] == "edit" else "commands"
         try:
             while True:
                 parts = [("  Allow?  ", "bold"), ("y", f"bold {OK}"), (" yes  ", MUTED)]
                 if not strict:
-                    parts += [("a", f"bold {ACCENT}"), (f" always allow {what} this session  ", MUTED)]
+                    parts += [("a", f"bold {ACCENT}"), (f" {always}  ", MUTED)]
                 parts += [("n", f"bold {ERR}"), (" no  ", MUTED), ("[n] " if strict else "[y] ", MUTED)]
                 console.print(Text.assemble(*parts), end="")
                 answer = input().strip().lower()
@@ -244,6 +261,7 @@ class App:
         events = self._events = queue.Queue()
         stop = self._stop = threading.Event()
         session = self.session
+        self._finished = True
 
         def work() -> None:
             gen = session.ask(text, shown=shown)
@@ -274,6 +292,7 @@ class App:
         except KeyboardInterrupt:
             stop.set()
             self.workspace.cancel()
+            self._finished = False
             r.end_thought(self.verbose)
             r.flush()
             note("⎿  Stopped. Tell Vesper what to do instead.", WARN)
@@ -293,6 +312,13 @@ class App:
             r.flush()
             label = TOOL_LABELS.get(data["name"], data["name"])
             r.progress(f"Preparing {label} ({fmt_tokens(data['chars'])} characters)")
+        elif event == "tasks":
+            r.stop()
+            console.print(tasks_block(data["items"]))
+            r.start()
+        elif event in ("tool_start", "tool_end") and data["name"] == "update_tasks" and data.get("ok", True):
+            r.flush()  # the list itself is drawn by the "tasks" event
+            r.restart("Thinking")
         elif event == "tool_start":
             r.flush()
             console.print(tool_start_line(data["name"], data["args"]))
@@ -330,6 +356,7 @@ class App:
             console.print(turn_footer(data, self.session.context_tokens))
         elif event == "error":
             r.flush()
+            self._finished = False
             self.show_error(data["exc"])
 
     def wait_idle(self) -> None:
@@ -423,7 +450,7 @@ class App:
             return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
         def toolbar():
-            color = {"ask": "ansigreen", "auto-edit": "ansiyellow", "yolo": "ansired"}[app.mode]
+            color = {"ask": "ansigreen", "auto-edit": "ansiyellow", "yolo": "ansired", "plan": "ansiblue"}[app.mode]
             folder = tail_path(app.root, 34)
             used = app.session.tokens["context"] if app.session else 0
             ctx = f"  ·  context {min(100, round(100 * used / app.session.context_tokens))}%" if used else ""
@@ -445,11 +472,14 @@ class App:
         )
 
     def set_mode(self, mode: str, quiet: bool = False) -> None:
+        if mode == "plan" and self.mode != "plan":
+            self._before_plan = self.mode
         self.mode = mode
         if self.workspace is not None:
             self.workspace.mode = mode
             self.workspace.always.clear()
-        self._remember({"agent_mode": mode})
+        if mode != "plan":  # plan mode is for one piece of work, not a setting to start in
+            self._remember({"agent_mode": mode})
         if not quiet:
             console.print(Text.assemble(("  mode: ", MUTED), (mode, "bold"), (f" · {MODES[mode]}", MUTED)))
 
@@ -486,6 +516,94 @@ class App:
             attached.append(f'<file path="{ref}">\n{body[:MAX_MENTION_CHARS]}\n</file>')
             console.print(Text.assemble(("  ⎿  attached ", MUTED), (ref, ACCENT)))
         return text + ("\n\n" + "\n\n".join(attached) if attached else "")
+
+    # ----- plan, undo, context, rules -----
+    def offer_plan(self) -> bool:
+        """After a plan-mode answer: ask whether to carry it out. Returns True when the user said yes."""
+        try:
+            console.print(Text.assemble(("  Carry out this plan?  ", "bold"), ("y", f"bold {OK}"), (" yes  ", MUTED),
+                                        ("n", f"bold {ERR}"), (" keep planning  ", MUTED), ("[n] ", MUTED)), end="")
+            answer = input().strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            console.print()
+            return False
+        if answer not in ("y", "yes"):
+            note("Still in plan mode. Say what to change, or /plan to leave it.")
+            return False
+        self.set_mode(self._before_plan)
+        return True
+
+    def undo(self) -> None:
+        self.wait_idle()
+        try:
+            paths = self.session.undo()
+        except OSError as exc:
+            note(f"Could not put the files back: {exc}", ERR)
+            return
+        if not paths:
+            note("Nothing to undo: Vesper has not changed a file in this conversation.")
+            return
+        for path in paths:
+            console.print(Text.assemble(("  ↩ ", ACCENT_2), (self.workspace.rel(Path(path)), "")))
+        note(f"{len(paths)} file{'s' if len(paths) != 1 else ''} put back. Commands Vesper ran are not undone.")
+
+    def compact(self) -> None:
+        self.wait_idle()
+        before = self.session.tokens["context"]
+        try:
+            with console.status(Text("Summarizing the conversation…", style=MUTED), spinner="dots", spinner_style=ACCENT):
+                done = self.session.compact()
+        except KeyboardInterrupt:
+            note("stopped", WARN)
+            return
+        if done:
+            note(f"Older turns are now a summary: about {fmt_tokens(before)} → {fmt_tokens(self.session.tokens['context'])} tokens.")
+        else:
+            note("Nothing to summarize yet." if len(self.session.history) < 3 else "The model could not write a summary; nothing changed.", WARN)
+
+    def permissions(self, arg: str) -> None:
+        from vesper import permissions as perm
+
+        ws = self.workspace
+        rows = [("allow_commands", r, ws.rules) for r in ws.rules] + [("allow_hosts", r, ws.hosts) for r in ws.hosts]
+        words = arg.split()
+        if words and words[0] in ("remove", "rm", "delete"):
+            picked = int(words[1]) if len(words) > 1 and words[1].isdigit() else 0
+            if not 1 <= picked <= len(rows):
+                note("/permissions remove NUMBER (see /permissions for the numbers)", WARN)
+                return
+            key, rule, live = rows[picked - 1]
+            live.remove(rule)
+            try:
+                perm.remove_rule(rule, key)
+            except OSError:
+                pass
+            note(f"Removed: {rule}")
+            return
+        t = Table(box=None, padding=(0, 2), show_header=False)
+        t.add_column(style=MUTED, justify="right")
+        t.add_column()
+        t.add_column(style=MUTED)
+        for n, (key, rule, _) in enumerate(rows, 1):
+            t.add_row(str(n), rule, "command" if key == "allow_commands" else "web site")
+        if not rows:
+            t.add_row("", "No saved rules yet.", "")
+        console.print(Panel(t, title="runs without asking", title_align="left", border_style=ACCENT, box=box.ROUNDED, expand=False))
+        note("Answer `a` to an approval to add a rule · /permissions remove NUMBER deletes one")
+        note("Read-only commands never ask: " + ", ".join(perm.SAFE_COMMANDS[:12]) + ", …")
+
+    def think(self, arg: str) -> None:
+        from vesper import providers as prov
+
+        level = {"on": "medium"}.get(arg, arg)
+        if level not in prov.THINKING:
+            note(f"thinking: {self.cfg.get('thinking') or 'off'} · /think off | low | medium | high")
+            return
+        self.cfg["thinking"] = level
+        self._remember({"thinking": level})
+        self._reload_llm()
+        note("thinking: " + level + (" · the model decides by itself" if level == "off"
+                                     else " · needs a model that can reason; ctrl+o shows the thinking"))
 
     # ----- moving around -----
     def cd(self, target: str) -> None:
@@ -564,8 +682,10 @@ class App:
         t.add_row("model", model_label(self.cfg))
         t.add_row("folder", tail_path(self.root, 70))
         t.add_row("mode", f"{self.mode} · {MODES[self.mode]}")
+        t.add_row("thinking", self.cfg.get("thinking") or "off")
         t.add_row("session", f"{s.id} · {len(s.history)} messages" + (f" · {s.title}" if s.title else ""))
-        t.add_row("tokens", f"{fmt_tokens(s.tokens['input'])} in, {fmt_tokens(s.tokens['output'])} out")
+        cached = f" ({fmt_tokens(s.tokens['cached'])} read from cache)" if s.tokens.get("cached") else ""
+        t.add_row("tokens", f"{fmt_tokens(s.tokens['input'])} in{cached}, {fmt_tokens(s.tokens['output'])} out")
         t.add_row("context", f"{fmt_tokens(s.tokens['context'])} of {fmt_tokens(s.context_tokens)} "
                              f"({min(100, round(100 * s.tokens['context'] / s.context_tokens))}%)")
         t.add_row("history", tail_path(self.store.path, 70) if self.store is not None else "off")
@@ -618,7 +738,17 @@ class App:
             if arg in MODES:
                 self.set_mode(arg)
             else:
-                note("/mode ask | auto-edit | yolo")
+                note("/mode ask | auto-edit | yolo | plan")
+        elif cmd == "/plan":
+            self.set_mode(self._before_plan if self.mode == "plan" else "plan")
+        elif cmd == "/undo":
+            self.undo()
+        elif cmd == "/compact":
+            self.compact()
+        elif cmd == "/permissions":
+            self.permissions(arg)
+        elif cmd == "/think":
+            self.think(arg.lower())
         elif cmd == "/model":
             if pick_model(self.cfg):
                 self._reload_llm()
@@ -690,6 +820,10 @@ class App:
             console.print()
             self.run_turn(self.expand_mentions(line), shown=line)
             console.print()
+            if self.mode == "plan" and self._finished and self.offer_plan():
+                console.print()
+                self.run_turn("The plan is approved. Carry it out now.")
+                console.print()
         if self.session is not None and self.session.history and self.store is not None:
             note(f"Saved. Continue later with: vesper -r {self.session.id[:8]}")
         console.print(Text("  See you ✦", style=ACCENT))
@@ -708,7 +842,10 @@ def print_mode(root: Path, question: str, cfg: dict, mode: str, store=None, resu
     if not prov.fake_llm_enabled() and (not cfg.get("provider") or not provider_ready(cfg["provider"])):
         err_console.print("No model is set up yet. Run `vesper` once to choose one.", style=ERR)
         return 2
-    ws = Workspace(root, mode=mode,
+    from vesper import permissions
+
+    ws = Workspace(root, mode=mode, rules=permissions.load_rules("allow_commands"),
+                   hosts=permissions.load_rules("allow_hosts"),
                    embeddings_factory=lambda: prov.get_embeddings(cfg.get("embeddings") or "local"))
 
     def on_sigint(signum, frame):  # stop a running command first, or it would outlive us
@@ -859,7 +996,7 @@ def main(argv: list[str] | None = None) -> int:
                     help="continue the last conversation in this folder")
     ap.add_argument("-r", "--resume", nargs="?", const="", metavar="ID",
                     help="resume a conversation by id (no id: pick from a list)")
-    ap.add_argument("--mode", choices=list(MODES), help="ask (default), auto-edit or yolo")
+    ap.add_argument("--mode", choices=list(MODES), help="ask (default), auto-edit, yolo or plan")
     ap.add_argument("--model", help="provider/model, e.g. openai/gpt-4.1-mini or ollama/llama3.2")
     ap.add_argument("-v", "--version", action="version", version=f"vesper {__version__}")
     args = ap.parse_args(argv)
@@ -877,7 +1014,7 @@ def main(argv: list[str] | None = None) -> int:
             err_console.print(f"Unknown provider {pid!r}. Choose one of: {', '.join(prov.PROVIDERS)}", style=ERR)
             return 2
         cfg.update(provider=pid, model=model)
-    mode = args.mode or (cfg.get("agent_mode") if cfg.get("agent_mode") in MODES else "ask")
+    mode = args.mode or (cfg.get("agent_mode") if cfg.get("agent_mode") in MODES and cfg["agent_mode"] != "plan" else "ask")
 
     piped = read_piped(bool(args.prompt))
     if len(piped) > MAX_PIPED_CHARS:
