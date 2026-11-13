@@ -423,3 +423,6 @@ def test_mentions_attach_files_folders_and_images(proj):
     assert len(images) == 1 and images[0]["mime_type"] == IMAGE_TYPES[".png"]
     dropped, images = app.expand_mentions(f"what is {proj / 'pic.png'}")
     assert len(images) == 1 and dropped.startswith("what is")
+    from vesper.tui import DROPPED  # what a Windows terminal pastes
+    assert [m.group(3) for m in DROPPED.finditer(r"see C:\Users\me\pic.png")] == [r"C:\Users\me\pic.png"]
+    assert [m.group(2) for m in DROPPED.finditer(r'see "C:\Users\me\my pic.png"')] == [r"C:\Users\me\my pic.png"]

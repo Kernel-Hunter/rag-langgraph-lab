@@ -118,7 +118,8 @@ SHORTCUTS = [
 MAX_PIPED_CHARS = 200_000  # text piped into one-shot mode
 STDIN_WAIT_S = 2.0         # how long one-shot mode waits for piped text when it already has a question
 MENTION = re.compile(r"""(?<![\w/])@(?:"([^"]+)"|'([^']+)'|((?:[\w./~\-+]|\\ )+))""")
-DROPPED = re.compile(r"""'(/[^']+)'|"(/[^"]+)"|((?:~|/)(?:[^\s\\]|\\ )+)""")
+# Windows terminals paste C:\path or "C:\path with spaces"; macOS and Linux paste /path, '/path' or /path\ with\ spaces.
+DROPPED = re.compile(r"""'((?:/|[A-Za-z]:\\)[^']+)'|"((?:/|[A-Za-z]:\\)[^"]+)"|([A-Za-z]:\\[^\s"']+)|((?:~|/)(?:[^\s\\]|\\ )+)""")
 
 
 def mention_refs(text: str) -> list[str]:
@@ -135,7 +136,7 @@ def dropped_paths(text: str) -> list[str]:
     """Absolute paths a terminal pastes when a file is dragged onto it (quoted or with escaped spaces)."""
     found = []
     for m in DROPPED.finditer(text):
-        raw = m.group(1) or m.group(2) or m.group(3).replace("\\ ", " ")
+        raw = m.group(1) or m.group(2) or m.group(3) or m.group(4).replace("\\ ", " ")
         path = Path(raw).expanduser()
         if path.is_file():
             found.append(str(path))
