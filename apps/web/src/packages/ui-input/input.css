@@ -43,3 +43,50 @@
 [data-theme="terminal"] .send { border-radius: var(--r-sm); }
 [data-theme="terminal"] .chip-btn { border-radius: var(--r-sm); border-style: dashed; }
 @media (max-width: 640px) { .chip-btn .chip-label { max-width: 120px; } .hint { display: none; } }
+
+/* ---------- attachments and the + menu ---------- */
+.add-btn { width: 30px; height: 30px; border-radius: 50%; border: 1px solid var(--line-2); color: var(--text-2); display: grid; place-items: center; }
+.add-btn:hover, .add-btn.on { background: var(--layer-2); color: var(--text); }
+.add-btn.on svg { transform: rotate(45deg); }
+.add-btn svg { transition: transform var(--t-mid) var(--ease); }
+.add-menu {
+  position: absolute; left: 8px; bottom: calc(100% + 8px); z-index: 20; width: 300px; padding: 6px;
+  background: var(--layer-1); border: 1px solid var(--line-2); border-radius: var(--r-lg); box-shadow: var(--shadow);
+  animation: pop-in var(--t-mid) var(--ease);
+}
+.menu-item {
+  display: flex; align-items: flex-start; gap: 12px; width: 100%; padding: 9px 10px; border-radius: var(--r-md);
+  text-align: left; color: var(--text-2);
+}
+.menu-item:hover:not(:disabled) { background: var(--layer-2); color: var(--text); }
+.menu-item:disabled { opacity: .45; }
+.menu-item svg { margin-top: 2px; color: var(--accent); flex: none; }
+.menu-item span { display: flex; flex-direction: column; gap: 1px; }
+.menu-item strong { font-weight: 600; color: var(--text); font-size: 13.5px; }
+.menu-item small { font-size: 12px; color: var(--text-3); }
+.menu-note { margin: 6px 10px 4px; font-size: 11.5px; color: var(--text-3); }
+.att-row { display: flex; flex-wrap: wrap; gap: 6px; padding: 2px 0 4px; }
+.att-chip {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 260px; height: 30px; padding: 0 4px 0 9px;
+  border-radius: var(--r-sm); background: var(--layer-2); border: 1px solid var(--line); font-size: 12.5px; color: var(--text);
+}
+.att-chip > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.att-chip > svg { color: var(--accent); flex: none; }
+.att-chip img { width: 22px; height: 22px; object-fit: cover; border-radius: 4px; margin-left: -4px; }
+.att-chip.folder > svg { color: var(--accent-2); }
+.att-chip.sent { padding-right: 10px; background: color-mix(in srgb, var(--accent) 9%, var(--layer-1)); }
+.att-x { width: 22px; height: 22px; border-radius: 6px; display: grid; place-items: center; color: var(--text-3); flex: none; }
+.att-x:hover { background: var(--layer-3); color: var(--text); }
+.chip-btn.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, transparent); }
+
+/* ---------- slash commands ---------- */
+.slash-menu {
+  position: absolute; left: 0; right: 0; bottom: calc(100% - 6px); z-index: 20; padding: 6px; max-height: 300px; overflow: auto;
+  background: var(--layer-1); border: 1px solid var(--line-2); border-radius: var(--r-lg); box-shadow: var(--shadow);
+}
+.slash-item { display: flex; gap: 12px; align-items: baseline; width: 100%; padding: 7px 10px; border-radius: var(--r-sm); text-align: left; }
+.slash-item code { font-family: var(--mono); font-size: 13px; color: var(--accent); min-width: 110px; }
+.slash-item span { font-size: 12.5px; color: var(--text-3); }
+.slash-item.on { background: var(--layer-2); }
+@keyframes pop-in { from { opacity: 0; transform: translateY(4px) scale(.98); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .add-menu { animation: none; } }

@@ -37,7 +37,6 @@ IGNORED_DIRS = {
     ".pytest_cache", ".ruff_cache", ".tox", "dist", "build", ".next", ".nuxt", "target", ".idea",
     ".vscode", ".gradle", ".cache", ".DS_Store", "Pods", ".terraform",
 }
-DOC_SUFFIXES = {".pdf", ".md", ".txt"}  # what vesper.indexing can load
 MAX_READ_BYTES = 2_000_000          # text files larger than this are read in part only
 MAX_LINE_CHARS = 2000
 DEFAULT_READ_LINES = 400
@@ -46,12 +45,10 @@ MAX_MATCHES = 100
 MAX_GREP_FILE_BYTES = 2_000_000
 MAX_OUTPUT_CHARS = 12_000         # command output and web pages returned to the model
 MAX_WRITE_CHARS = 1_000_000
-MAX_INDEX_FILES = 300
-MAX_INDEX_BYTES = 150_000_000
 MAX_SCAN_FILES = 50_000             # glob and grep stop walking after this many files
 MAX_TASKS = 20
 
-READ_ONLY = {"list_files", "read_file", "glob", "grep", "search_docs"}          # same call, same answer
+READ_ONLY = {"list_files", "read_file", "glob", "grep"}          # same call, same answer
 CHANGES_THINGS = {"write_file", "edit_file", "run_command", "change_directory"}  # after these, read again
 REPEATED = ("You already made this exact call in this turn and nothing has changed since. "
             "Use the result you have; do not call it again.")
@@ -91,9 +88,6 @@ class Workspace:
     root: Path
     approve: Approver = _deny_all
     mode: str = "ask"  # ask | auto-edit (edits run without asking) | yolo (nothing asks) | plan (read only)
-    embeddings_factory: Callable[[], object] | None = None
-    k: int = 4
-    on_sources: Callable[[str, list], None] | None = None
     on_cwd: Callable[[Path], None] | None = None        # the working directory changed
     on_auto: Callable[[dict], None] | None = None       # an edit or command ran without asking
     on_output: Callable[[str], None] | None = None      # a line of output from a running command
@@ -105,8 +99,6 @@ class Workspace:
     hosts: list[str] = field(default_factory=list)      # web hosts that never ask
     tasks: list[dict] = field(default_factory=list)     # [{"text", "status": pending | active | done}]
     _seen: set = field(default_factory=set, repr=False)  # read-only calls already answered this turn
-    _index: object | None = field(default=None, repr=False)
-    _index_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     _running: list = field(default_factory=list, repr=False)  # stop functions of commands in progress
     waited: float = 0.0  # seconds spent waiting for the user to answer approvals
     stopped: bool = False  # the user stopped the turn: tools refuse to start until the next one
@@ -145,7 +137,6 @@ class Workspace:
             raise ToolError(f"{path} is a file, not a folder.")
         if target != self.root:
             self.root = target
-            self.forget_index()
             if self.on_cwd is not None:
                 self.on_cwd(target)
         try:
@@ -160,7 +151,7 @@ class Workspace:
         home = Path.home()
         if SECRET_NAMES.match(p.name):
             return True
-        return p.name == ".env" and p.parent.name in (".vesper", ".pagewise", ".rag-lab") and p.parent.parent == home
+        return p.name == ".env" and p.parent.name == ".vesper" and p.parent.parent == home
 
     @staticmethod
     def _is_credential_path(p: Path) -> bool:
@@ -541,6 +532,8 @@ class Workspace:
                 proc.kill()
 
         self._running.append(stop)
+        if self.stopped:  # Stop was pressed while the command was starting
+            stop()
         try:
             code = proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
@@ -563,67 +556,6 @@ class Workspace:
         self.stopped = True
         for stop in list(self._running):
             stop()
-
-    # ---------------------------------------------------------------- documents (RAG)
-    def doc_files(self) -> list[Path]:
-        files, total = [], 0
-        for p in self._walk(self.root, [MAX_SCAN_FILES]):
-            if p.suffix.lower() not in DOC_SUFFIXES:
-                continue
-            try:
-                size = p.stat().st_size
-            except OSError:
-                continue
-            if total + size > MAX_INDEX_BYTES or len(files) >= MAX_INDEX_FILES:
-                break
-            files.append(p)
-            total += size
-        return files
-
-    def search_docs(self, query: str) -> str:
-        store = self._ensure_index()
-        if store is None:
-            return "There are no PDF, Markdown or text documents in this folder to search."
-        found = store.similarity_search(query, k=self.k)
-        if self.on_sources is not None:
-            self.on_sources(query, found)
-        if not found:
-            return "Nothing relevant found in the documents."
-        return "\n\n".join(
-            f"[{d.metadata.get('source', '?')}, page {d.metadata.get('page', '?')}] {d.page_content}" for d in found
-        )
-
-    def _ensure_index(self):
-        with self._index_lock:
-            if self._index is not None:
-                return self._index or None
-            if self.embeddings_factory is None:
-                raise ToolError("Document search is not set up.")
-            from langchain_core.vectorstores import InMemoryVectorStore
-
-            from vesper.indexing import load_documents, split_documents
-
-            docs = []
-            for p in self.doc_files():
-                try:
-                    loaded = load_documents(p, warnings=[])
-                except Exception:
-                    continue
-                for d in loaded:
-                    d.metadata["source"] = self.rel(p)
-                    docs.append(d)
-            if not docs:
-                self._index = False
-                return None
-            chunks = split_documents(docs, chunk_size=800, chunk_overlap=120)
-            store = InMemoryVectorStore(self.embeddings_factory())
-            store.add_documents(chunks)
-            self._index = store
-            return store
-
-    def forget_index(self) -> None:
-        with self._index_lock:
-            self._index = None
 
     # ---------------------------------------------------------------- LangChain tools
     def tools(self) -> list:
@@ -676,11 +608,6 @@ class Workspace:
             return safe(ws.grep, pattern, path, file_glob, ignore_case)
 
         @tool
-        def search_docs(query: str) -> str:
-            """Semantic search over PDF, Markdown and text documents under the working directory. Cite results as [file, page N]."""
-            return safe(ws.search_docs, query)
-
-        @tool
         def write_file(path: str, content: str) -> str:
             """Create a file or replace its whole content. Use edit_file to change part of a file."""
             return safe(ws.write_file, path, content)
@@ -710,7 +637,7 @@ class Workspace:
             """Search the web. Returns titles, addresses and snippets; read a result with web_fetch."""
             return safe(ws.web_search, query)
 
-        return [list_files, read_file, glob, grep, search_docs, change_directory, write_file, edit_file,
+        return [list_files, read_file, glob, grep, change_directory, write_file, edit_file,
                 run_command, update_tasks, web_fetch, web_search]
 
 

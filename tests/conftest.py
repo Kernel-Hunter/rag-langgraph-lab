@@ -5,7 +5,7 @@ import json
 import os
 import tempfile
 
-# Before anything imports vesper: never read, migrate or write the real ~/.vesper or ~/.rag-lab.
+# Before anything imports vesper: never read, migrate or write the real ~/.vesper.
 os.environ["VESPER_HOME"] = tempfile.mkdtemp(prefix="vesper-tests-")
 # The agent's tools expand `~`. Point it at a throwaway folder so no test can touch the real home.
 os.environ["HOME"] = os.environ["USERPROFILE"] = tempfile.mkdtemp(prefix="vesper-tests-home-")
@@ -14,7 +14,7 @@ import pytest
 from fastapi.testclient import TestClient
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
 
-ANSWER = "Two absences are allowed [page 3]."
+ANSWER = "Hello from the test model."
 
 
 @pytest.fixture(autouse=True)
@@ -30,7 +30,7 @@ def _restore_environ():
 def home(tmp_path, monkeypatch):
     monkeypatch.setenv("VESPER_HOME", str(tmp_path))
     monkeypatch.delenv("VESPER_FAKE_LLM", raising=False)
-    (tmp_path / "config.json").write_text(json.dumps({"embeddings": "fake", "provider": "ollama", "mode": "graph"}))
+    (tmp_path / "config.json").write_text(json.dumps({"provider": "ollama"}))
     return tmp_path
 
 
@@ -49,7 +49,6 @@ def make_client(server):
     def make(token="t0k", allowed_hosts=None, base_url="http://testserver", engine=None):
         if engine is None:
             engine = server.Engine()
-            engine.rebuild()
             engine._llm = FakeListChatModel(responses=[ANSWER])
             engine._llm_key = (engine.settings["provider"], engine.settings["model"], engine.settings["thinking"])
         app = server.create_app(token, engine, allowed_hosts=allowed_hosts)

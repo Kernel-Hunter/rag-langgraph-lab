@@ -1,4 +1,4 @@
-"""Vesper desktop launcher: `rag-lab-app`.
+"""Vesper desktop launcher: `vesper-app`.
 
 Modes:
   (no flag)   start the local API on a free 127.0.0.1 port and open the UI in
@@ -65,7 +65,6 @@ def start_server(token: str, port: int | None = None):
 
     port = port or _free_port()
     app = _make_app(token, port)
-    app.state.engine.rebuild_async()
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
@@ -153,28 +152,19 @@ def smoke_test() -> int:
     import urllib.request
 
     home = tempfile.mkdtemp(prefix="vesper-smoke-")
-    os.environ["VESPER_HOME"] = home
-    os.environ.pop("VESPER_HOME", None)
-    with open(os.path.join(home, "config.json"), "w") as f:
-        json.dump({"embeddings": "fake"}, f)  # no network in the smoke test
+    os.environ["VESPER_HOME"] = home  # before vesper.providers is imported: it reads this once
 
     from vesper import providers as prov
 
     for pid in prov.PROVIDERS:  # every client must construct
         prov.get_llm(pid, "smoke-model")
-    prov.get_embeddings("openai")
     token = secrets.token_urlsafe(16)
     app, port, _ = start_server(token)
-    app.state.engine.rebuild()
-    from vesper.providers import LocalEmbeddings  # bundled ONNX runtime must load
-
-    if getattr(sys, "frozen", False):
-        LocalEmbeddings().embed_query("smoke")
     req = urllib.request.Request(f"http://127.0.0.1:{port}/api/state", headers={"X-Token": token})
     state = json.load(urllib.request.urlopen(req, timeout=10))
     page = urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=10).read()
-    ok = state["index"]["status"] == "ready" and b"<html" in page.lower()
-    print("smoke", "ok" if ok else f"failed: {state['index']}")
+    ok = bool(state.get("providers")) and b"<html" in page.lower()
+    print("smoke", "ok" if ok else f"failed: {sorted(state)}")
     return 0 if ok else 1
 
 
@@ -185,7 +175,6 @@ def serve_only():
     token = _token()
     port = _port()
     app = _make_app(token, port)
-    app.state.engine.rebuild_async()
     print(f"Open http://127.0.0.1:{port}/#token={token}", flush=True)
     uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
 

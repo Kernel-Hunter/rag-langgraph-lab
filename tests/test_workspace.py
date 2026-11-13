@@ -4,7 +4,6 @@ import os
 import sys
 
 import pytest
-from langchain_core.embeddings import DeterministicFakeEmbedding
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage
 
@@ -20,8 +19,7 @@ def ws(tmp_path):
     (tmp_path / "node_modules").mkdir()
     (tmp_path / "node_modules" / "junk.js").write_text("x")
     (tmp_path / "blob.bin").write_bytes(b"\x00\x01\x02")
-    return Workspace(tmp_path, approve=lambda a: "yes",
-                     embeddings_factory=lambda: DeterministicFakeEmbedding(size=32))
+    return Workspace(tmp_path, approve=lambda a: "yes")
 
 
 def tools(ws):
@@ -206,12 +204,6 @@ def test_write_creates_parents_atomically(ws):
     assert not list(ws.root.rglob("*.vesper-tmp"))
 
 
-def test_search_docs_cites_files(ws):
-    found = []
-    ws.on_sources = lambda q, docs: found.append(docs)
-    assert "[notes.md, page 1]" in ws.search_docs("absences") and found
-
-
 # ---------------------------------------------------------------- agent loop
 class ToolFake(GenericFakeChatModel):
     def bind_tools(self, tools, **kwargs):
@@ -248,7 +240,7 @@ def _folder_engine(server, tmp_path, monkeypatch, replies):
     proj.mkdir()
     (proj / "a.txt").write_text("old\n")
     engine = server.Engine()
-    engine.update({"mode": "folder", "workspace": str(proj)})
+    engine.update({"workspace": str(proj)})
     llm = ToolFake(disable_streaming=True, messages=iter(replies))
     monkeypatch.setattr(engine, "llm", lambda: llm)
     return engine, proj
@@ -290,11 +282,15 @@ def test_engine_folder_mode_refuses_when_client_leaves(server, tmp_path, monkeyp
     assert not (proj / "x.txt").exists()
 
 
-def test_engine_folder_needs_a_folder(server):
+def test_engine_without_a_folder_starts_in_home(server, monkeypatch):
+    from langchain_core.messages import AIMessage
+
     engine = server.Engine()
-    engine.update({"mode": "folder", "workspace": ""})
+    engine.update({"workspace": ""})
+    monkeypatch.setattr(engine, "llm", lambda: ToolFake(messages=iter([AIMessage("hi")])))
     events = list(engine.stream_answer("hi", "c", []))
-    assert events[0][0] == "error" and "folder" in events[0][1]["message"]
+    assert events[0] == ("session", {"id": events[0][1]["id"], "cwd": str(server.Path.home().resolve())})
+    assert ("token", {"text": "hi"}) in events
 
 
 @pytest.mark.parametrize("value", ["relative/path", "/definitely/not/here", 5])

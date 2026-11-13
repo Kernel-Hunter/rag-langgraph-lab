@@ -1,17 +1,15 @@
-import { useEffect, useRef, useState, type DragEvent, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { api, type AgentMode, type Permissions, type Provider, type Thinking } from '../connection/api'
 import {
-  canPickFolder, closeSettings, getState, openFolder, pickFolder, removeDoc, saveSettings, setAgentMode, setAppearance, setSettingsTab,
-  uploadFiles, useStore, type SettingsTab,
+  canPickFolder, closeSettings, getState, openFolder, pickFolder, saveSettings, setAgentMode, setAppearance, setSettingsTab,
+  useStore, type SettingsTab,
 } from '../store/store'
 import { EFFECTS, type EffectChoice, type Phosphor, type ThemeChoice } from '../ui-theme/appearance'
 import { Icon, type IconName } from '../ui-primitives/Icon'
 
 const TABS: { id: SettingsTab; label: string; icon: IconName }[] = [
-  { id: 'folder', label: 'Folder', icon: 'folder' },
-  { id: 'models', label: 'Models', icon: 'key' },
-  { id: 'documents', label: 'Documents', icon: 'doc' },
-  { id: 'retrieval', label: 'Retrieval', icon: 'sliders' },
+  { id: 'models', label: 'Models and keys', icon: 'key' },
+  { id: 'agent', label: 'Agent', icon: 'shield' },
   { id: 'appearance', label: 'Appearance', icon: 'palette' },
 ]
 
@@ -25,7 +23,7 @@ function Section({ title, desc, children }: { title: string; desc?: string; chil
   )
 }
 
-// ---------------- Folder ----------------
+// ---------------- Agent ----------------
 const AGENT_MODES: { id: AgentMode; label: string; hint: string }[] = [
   { id: 'ask', label: 'Ask first', hint: 'Reads freely. Asks before every edit and every command.' },
   { id: 'auto-edit', label: 'Auto-edit', hint: 'Edits files without asking. Still asks before running commands.' },
@@ -60,7 +58,7 @@ function Rules() {
   )
 }
 
-function FolderTab() {
+function AgentTab() {
   const server = useStore(s => s.server)
   const [path, setPath] = useState(server?.settings.workspace ?? '')
   const saved = server?.settings.workspace ?? ''
@@ -69,7 +67,7 @@ function FolderTab() {
   const s = server.settings
   return (
     <>
-      <Section title="Working folder" desc="Where Vesper starts: relative paths and commands run here. It can go to other folders when you ask. PDFs, Markdown and text files in it can be searched with citations.">
+      <Section title="Working folder" desc={`Where Vesper starts: relative paths and commands run here. It can go to other folders when you ask. With none set it starts in your home folder (${server.home}).`}>
         <form className="key-input" onSubmit={e => { e.preventDefault(); if (path.trim()) void openFolder(path.trim()) }}>
           <input className="input mono" value={path} onChange={e => setPath(e.target.value)} placeholder="/Users/you/projects/my-app" aria-label="Folder path" spellCheck={false} />
           {canPickFolder() && <button type="button" className="btn ghost" onClick={() => void pickFolder()}><Icon name="folder" size={14} /> Browse</button>}
@@ -158,16 +156,7 @@ function ModelsTab() {
   const local = server.providers.filter(p => p.local)
   return (
     <>
-      <Section title="Docs mode" desc="How Vesper answers from the documents you added. Graph runs retrieve then generate. Agent lets the model decide when and what to search.">
-        <div className="segmented">
-          {(['graph', 'agent'] as const).map(m => (
-            <button type="button" key={m} className={server.settings.mode === m ? 'on' : ''} onClick={() => void saveSettings({ mode: m })}>
-              {m === 'graph' ? 'Graph (fast)' : 'Agent (tool use)'}
-            </button>
-          ))}
-        </div>
-      </Section>
-      <Section title="API keys" desc="Keys stay on this computer, in a private file only your user can read. They are never sent anywhere except to that provider.">
+      <Section title="API keys" desc="Keys stay on this computer, in ~/.vesper/.env, which only your user can read. The terminal app uses the same file: a key added in either place works in both.">
         <div className="key-list">
           {cloud.map(p => <KeyRow key={p.id} p={p} focus={focus === p.id} />)}
         </div>
@@ -177,123 +166,6 @@ function ModelsTab() {
           <input className="input" value={url} onChange={e => setUrl(e.target.value)} placeholder="http://localhost:8000/v1" aria-label="Custom base URL" spellCheck={false} />
           <button type="submit" className="btn primary" disabled={url.trim() === server.custom_base_url}>Save</button>
         </form>
-      </Section>
-    </>
-  )
-}
-
-// ---------------- Documents ----------------
-function DocumentsTab() {
-  const server = useStore(s => s.server)
-  const [over, setOver] = useState(false)
-  const input = useRef<HTMLInputElement>(null)
-  if (!server) return null
-  const idx = server.index
-  const onDrop = (e: DragEvent): void => {
-    e.preventDefault()
-    e.stopPropagation()
-    setOver(false)
-    void uploadFiles([...e.dataTransfer.files])
-  }
-  const fmt = (n: number): string => (n > 1e6 ? `${(n / 1e6).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1e3))} KB`)
-  return (
-    <>
-      <div
-        className={`dropzone${over ? ' over' : ''}`}
-        onDragOver={e => { e.preventDefault(); e.stopPropagation(); setOver(true) }}
-        onDragLeave={() => setOver(false)}
-        onDrop={onDrop}
-        onClick={() => input.current?.click()}
-        role="button" tabIndex={0}
-        onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); input.current?.click() } }}
-      >
-        <Icon name="upload" size={24} />
-        <strong>Drop files here or click to browse</strong>
-        <span>PDF, Markdown or text · up to 50 MB each</span>
-        <input
-          ref={input} type="file" multiple accept=".pdf,.md,.txt" hidden
-          onChange={e => { void uploadFiles([...(e.target.files ?? [])]); e.target.value = '' }}
-        />
-      </div>
-      <div className={`index-status ${idx.status}`}>
-        {['loading', 'embedding', 'idle'].includes(idx.status) && <span className="spinner" />}
-        {idx.status === 'ready' && <Icon name="check" size={14} />}
-        {idx.status === 'error' && <Icon name="warn" size={14} />}
-        <span>
-          {idx.status === 'ready' ? `${idx.chunks} chunks from ${idx.pages} pages, ready`
-            : idx.status === 'embedding' ? 'Embedding chunks…'
-              : idx.status === 'loading' || idx.status === 'idle' ? 'Reading documents…'
-                : idx.status === 'empty' ? 'No documents yet'
-                  : idx.error}
-        </span>
-      </div>
-      {!!idx.warnings?.length && (
-        <div className="warnings">
-          {idx.warnings.map((w, i) => (
-            <div key={i} className="warning"><Icon name="warn" size={13} /><span><b>{w.source}</b>: {w.message}</span></div>
-          ))}
-        </div>
-      )}
-      <ul className="doc-list">
-        {server.docs.map(d => (
-          <li key={d.name}>
-            <Icon name="doc" size={16} />
-            <span className="doc-name" title={d.name}>{d.name}</span>
-            <span className="doc-size">{fmt(d.size)}</span>
-            <button type="button" className="icon-btn sm" aria-label={`Remove ${d.name}`} onClick={() => void removeDoc(d.name)}>
-              <Icon name="trash" size={14} />
-            </button>
-          </li>
-        ))}
-      </ul>
-    </>
-  )
-}
-
-// ---------------- Retrieval ----------------
-function Slider({ label, value, min, max, step, onCommit, hint }: {
-  label: string; value: number; min: number; max: number; step: number; onCommit: (v: number) => void; hint: string
-}) {
-  const [v, setV] = useState(value)
-  useEffect(() => setV(value), [value])
-  const commit = (): void => { if (v !== value) onCommit(v) }
-  return (
-    <label className="slider">
-      <div className="slider-head"><span>{label}</span><output>{v}</output></div>
-      <input
-        type="range" min={min} max={max} step={step} value={v}
-        onChange={e => setV(Number(e.target.value))} onPointerUp={commit} onKeyUp={commit} onBlur={commit}
-      />
-      <small>{hint}</small>
-    </label>
-  )
-}
-
-function RetrievalTab() {
-  const server = useStore(s => s.server)
-  if (!server) return null
-  const s = server.settings
-  const embedOptions = [
-    { id: 'local', label: 'On-device (free, private)' },
-    ...server.providers.filter(p => p.embeddings).map(p => ({ id: p.id, label: `${p.label}${p.needs_key && !p.has_key ? ' (needs key)' : ''}` })),
-  ]
-  return (
-    <>
-      <Section title="Embeddings" desc="Turns text into vectors for search. Changing it re-indexes your documents.">
-        <select className="input" value={s.embeddings} onChange={e => void saveSettings({ embeddings: e.target.value, embed_model: '' }, 'Re-indexing with new embeddings')}>
-          {embedOptions.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
-          {!embedOptions.some(o => o.id === s.embeddings) && <option value={s.embeddings}>{s.embeddings}</option>}
-        </select>
-      </Section>
-      <Section title="Chunking and search">
-        <div className="sliders">
-          <Slider label="Chunk size" value={s.chunk_size} min={200} max={3000} step={50} hint="Characters per chunk. Smaller is more precise, larger keeps more context."
-            onCommit={v => void saveSettings({ chunk_size: v, chunk_overlap: Math.round(v / 5) }, 'Re-indexing')} />
-          <Slider label="Overlap" value={s.chunk_overlap} min={0} max={Math.min(1000, s.chunk_size - 1)} step={10} hint="Characters shared between neighboring chunks."
-            onCommit={v => void saveSettings({ chunk_overlap: v }, 'Re-indexing')} />
-          <Slider label="Chunks per answer (k)" value={s.k} min={1} max={12} step={1} hint="How many chunks the model reads for each question."
-            onCommit={v => void saveSettings({ k: v })} />
-        </div>
       </Section>
     </>
   )
@@ -406,10 +278,8 @@ export function Settings() {
             <button type="button" className="icon-btn" onClick={closeSettings} aria-label="Close settings"><Icon name="close" size={16} /></button>
           </header>
           <div className="set-scroll">
-            {tab === 'folder' && <FolderTab />}
+            {tab === 'agent' && <AgentTab />}
             {tab === 'models' && <ModelsTab />}
-            {tab === 'documents' && <DocumentsTab />}
-            {tab === 'retrieval' && <RetrievalTab />}
             {tab === 'appearance' && <AppearanceTab />}
           </div>
         </div>

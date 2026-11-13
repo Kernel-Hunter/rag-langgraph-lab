@@ -594,7 +594,7 @@ def test_engine_undo_compact_and_permissions_api(server, make_client, tmp_path, 
     proj.mkdir()
     (proj / "a.txt").write_text("alpha\n")
     engine = server.Engine()
-    engine.update({"mode": "folder", "workspace": str(proj), "agent_mode": "yolo", "thinking": "low"})
+    engine.update({"workspace": str(proj), "agent_mode": "yolo", "thinking": "low"})
     assert engine.settings["thinking"] == "low"
     llm = fake(call("edit_file", path="a.txt", old_string="alpha", new_string="beta"), AIMessage("Changed."),
                AIMessage("- summary"), AIMessage("More."))

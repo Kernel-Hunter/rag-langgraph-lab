@@ -1,6 +1,6 @@
-"""Chat models and embedding models, for many providers.
+"""Chat models for many providers.
 
-Every other module asks this file for a chat model and an embedding model, so a provider
+Every other module asks this file for a chat model, so a provider
 is added here and nowhere else. Most providers speak the OpenAI API, so one client with a
 different base URL covers them. Anthropic and Ollama get their own clients.
 """
@@ -13,45 +13,48 @@ import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from dotenv import load_dotenv
-from langchain_core.embeddings import Embeddings
+from dotenv import dotenv_values
 
 APP_NAME = "Vesper"
 
 
 def resolve_home(user_home: Path | None = None) -> Path:
-    """Per-user folder: settings, keys, downloaded embedding model, index cache, documents.
-
-    VESPER_HOME overrides it. Otherwise ~/.vesper; the first time it is used, the
-    contents of an older ~/.pagewise or ~/.rag-lab folder are copied over (the old one stays).
-    """
+    """Per-user folder: settings, keys and the session database. VESPER_HOME overrides ~/.vesper."""
     override = os.getenv("VESPER_HOME")
     if override:
         return Path(override)
-    base = Path(user_home) if user_home is not None else Path.home()
-    new = base / ".vesper"
-    old = next((d for d in (base / ".pagewise", base / ".rag-lab") if d.is_dir()), None)
-    if not new.exists() and old is not None:
-        import shutil
-
-        tmp = base / ".vesper.migrating"
-        try:
-            shutil.rmtree(tmp, ignore_errors=True)
-            # The Chrome app-mode profile is a cache; not worth copying.
-            shutil.copytree(old, tmp, ignore=shutil.ignore_patterns("browser-profile"), symlinks=True)
-            os.replace(tmp, new)
-        except OSError:
-            shutil.rmtree(tmp, ignore_errors=True)
-            return old  # could not migrate: keep using the old folder as is
-    return new
+    return (Path(user_home) if user_home is not None else Path.home()) / ".vesper"
 
 
 HOME = resolve_home()
 USER_ENV = HOME / ".env"
 
-# Only the app's own key file. A .env in whatever folder Vesper runs in belongs to that
-# project; the lab commands (`rag-lab`) load the repo's .env themselves.
-load_dotenv(USER_ENV)
+# Only the app's own key file. A .env in whatever folder Vesper runs in belongs to that project.
+# Variables set in the shell win over the file. The terminal and the desktop app both write
+# this file, so it is read again whenever it changes (see refresh_keys).
+_FROM_SHELL = frozenset(os.environ)
+_env_state: dict = {"mtime": None, "keys": set()}
+
+
+def refresh_keys() -> None:
+    """Pick up keys another Vesper process saved (the terminal app or the desktop app)."""
+    try:
+        mtime = USER_ENV.stat().st_mtime_ns
+    except OSError:
+        mtime = None
+    if mtime == _env_state["mtime"]:
+        return
+    values = {k: v for k, v in (dotenv_values(USER_ENV) if mtime is not None else {}).items() if v}
+    for key in _env_state["keys"] - set(values):  # removed from the file since the last read
+        if key not in _FROM_SHELL:
+            os.environ.pop(key, None)
+    for key, value in values.items():
+        if key not in _FROM_SHELL:
+            os.environ[key] = value
+    _env_state.update(mtime=mtime, keys=set(values))
+
+
+refresh_keys()
 
 
 @dataclass(frozen=True)
@@ -62,7 +65,6 @@ class Provider:
     base_url: str | None
     key_env: str | None
     chat_model: str
-    embed_model: str | None = None
     key_url: str = ""
     suggestions: tuple[str, ...] = field(default_factory=tuple)
     local: bool = False
@@ -72,53 +74,42 @@ PROVIDERS: dict[str, Provider] = {
     p.id: p
     for p in [
         Provider("openai", "OpenAI", "openai", None, "OPENAI_API_KEY", "gpt-4.1-nano",
-                 "text-embedding-3-small", "https://platform.openai.com/api-keys",
-                 ("gpt-4.1-nano", "gpt-4.1-mini", "gpt-4.1", "gpt-4o-mini")),
+                 "https://platform.openai.com/api-keys", ("gpt-4.1-nano", "gpt-4.1-mini", "gpt-4.1", "gpt-4o-mini")),
         Provider("anthropic", "Anthropic Claude", "anthropic", None, "ANTHROPIC_API_KEY", "claude-haiku-5-5",
-                 None, "https://console.anthropic.com/settings/keys",
-                 ("claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5")),
-        Provider("google", "Google Gemini", "openai", "https://generativelanguage.googleapis.com/v1beta/openai/",
-                 "GEMINI_API_KEY", "gemini-2.5-flash", "gemini-embedding-001",
+                 "https://console.anthropic.com/settings/keys", ("claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5")),
+        Provider("google", "Google Gemini", "openai", "https://generativelanguage.googleapis.com/v1beta/openai/", "GEMINI_API_KEY", "gemini-2.5-flash",
                  "https://aistudio.google.com/apikey", ("gemini-2.5-flash", "gemini-2.5-pro")),
-        Provider("deepseek", "DeepSeek", "openai", "https://api.deepseek.com/v1", "DEEPSEEK_API_KEY",
-                 "deepseek-chat", None, "https://platform.deepseek.com/api_keys",
-                 ("deepseek-chat", "deepseek-flash", "deepseek-v4-pro", "deepseek-reasoner")),
-        Provider("mistral", "Mistral", "openai", "https://api.mistral.ai/v1", "MISTRAL_API_KEY",
-                 "mistral-small-latest", "mistral-embed", "https://console.mistral.ai/api-keys",
-                 ("mistral-small-latest", "mistral-medium-latest", "mistral-large-latest")),
-        Provider("groq", "Groq", "openai", "https://api.groq.com/openai/v1", "GROQ_API_KEY",
-                 "llama-3.3-70b-versatile", None, "https://console.groq.com/keys",
-                 ("llama-3.3-70b-versatile", "llama-3.1-8b-instant")),
-        Provider("openrouter", "OpenRouter", "openai", "https://openrouter.ai/api/v1",
-                 "OPENROUTER_API_KEY", "openrouter/auto", None, "https://openrouter.ai/keys",
-                 ("openrouter/auto", "deepseek/deepseek-chat", "meta-llama/llama-3.3-70b-instruct")),
+        Provider("deepseek", "DeepSeek", "openai", "https://api.deepseek.com/v1", "DEEPSEEK_API_KEY", "deepseek-chat",
+                 "https://platform.deepseek.com/api_keys", ("deepseek-chat", "deepseek-flash", "deepseek-v4-pro", "deepseek-reasoner")),
+        Provider("mistral", "Mistral", "openai", "https://api.mistral.ai/v1", "MISTRAL_API_KEY", "mistral-small-latest",
+                 "https://console.mistral.ai/api-keys", ("mistral-small-latest", "mistral-medium-latest", "mistral-large-latest")),
+        Provider("groq", "Groq", "openai", "https://api.groq.com/openai/v1", "GROQ_API_KEY", "llama-3.3-70b-versatile",
+                 "https://console.groq.com/keys", ("llama-3.3-70b-versatile", "llama-3.1-8b-instant")),
+        Provider("openrouter", "OpenRouter", "openai", "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY", "openrouter/auto",
+                 "https://openrouter.ai/keys", ("openrouter/auto", "deepseek/deepseek-chat", "meta-llama/llama-3.3-70b-instruct")),
         Provider("xai", "xAI Grok", "openai", "https://api.x.ai/v1", "XAI_API_KEY", "grok-3-mini",
-                 None, "https://console.x.ai", ("grok-3-mini", "grok-3")),
-        Provider("together", "Together AI", "openai", "https://api.together.xyz/v1", "TOGETHER_API_KEY",
-                 "meta-llama/Llama-3.3-70B-Instruct-Turbo", None, "https://api.together.ai/settings/api-keys"),
-        Provider("fireworks", "Fireworks AI", "openai", "https://api.fireworks.ai/inference/v1",
-                 "FIREWORKS_API_KEY", "accounts/fireworks/models/llama-v3p3-70b-instruct", None,
+                 "https://console.x.ai", ("grok-3-mini", "grok-3")),
+        Provider("together", "Together AI", "openai", "https://api.together.xyz/v1", "TOGETHER_API_KEY", "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+                 "https://api.together.ai/settings/api-keys"),
+        Provider("fireworks", "Fireworks AI", "openai", "https://api.fireworks.ai/inference/v1", "FIREWORKS_API_KEY", "accounts/fireworks/models/llama-v3p3-70b-instruct",
                  "https://fireworks.ai/account/api-keys"),
-        Provider("cerebras", "Cerebras", "openai", "https://api.cerebras.ai/v1", "CEREBRAS_API_KEY",
-                 "llama-3.3-70b", None, "https://cloud.cerebras.ai"),
-        Provider("nvidia", "NVIDIA NIM", "openai", "https://integrate.api.nvidia.com/v1", "NVIDIA_API_KEY",
-                 "meta/llama-3.3-70b-instruct", None, "https://build.nvidia.com"),
-        Provider("huggingface", "Hugging Face", "openai", "https://router.huggingface.co/v1", "HF_TOKEN",
-                 "meta-llama/Llama-3.3-70B-Instruct", None, "https://huggingface.co/settings/tokens"),
-        Provider("moonshot", "Moonshot Kimi", "openai", "https://api.moonshot.ai/v1", "MOONSHOT_API_KEY",
-                 "kimi-k2-0905-preview", None, "https://platform.moonshot.ai"),
+        Provider("cerebras", "Cerebras", "openai", "https://api.cerebras.ai/v1", "CEREBRAS_API_KEY", "llama-3.3-70b",
+                 "https://cloud.cerebras.ai"),
+        Provider("nvidia", "NVIDIA NIM", "openai", "https://integrate.api.nvidia.com/v1", "NVIDIA_API_KEY", "meta/llama-3.3-70b-instruct",
+                 "https://build.nvidia.com"),
+        Provider("huggingface", "Hugging Face", "openai", "https://router.huggingface.co/v1", "HF_TOKEN", "meta-llama/Llama-3.3-70B-Instruct",
+                 "https://huggingface.co/settings/tokens"),
+        Provider("moonshot", "Moonshot Kimi", "openai", "https://api.moonshot.ai/v1", "MOONSHOT_API_KEY", "kimi-k2-0905-preview",
+                 "https://platform.moonshot.ai"),
         Provider("ollama", "Ollama (local)", "openai", "http://localhost:11434/v1", None, "qwen2.5:7b-instruct",
-                 "nomic-embed-text", "https://ollama.com/download", ("qwen2.5:7b-instruct", "llama3.2", "gemma3"),
-                 local=True),
+                 "https://ollama.com/download", ("qwen2.5:7b-instruct", "llama3.2", "gemma3"), local=True),
         Provider("lmstudio", "LM Studio (local)", "openai", "http://localhost:1234/v1", None, "local-model",
-                 None, "https://lmstudio.ai", local=True),
+                 "https://lmstudio.ai", local=True),
         Provider("custom", "Custom (OpenAI-compatible)", "openai", "", "CUSTOM_API_KEY", "",
-                 None, ""),
+                 ""),
     ]
 }
 
-LOCAL_EMBED_MODEL = "BAAI/bge-small-en-v1.5"
-EMBEDDING_PROVIDERS = ["local"] + [p.id for p in PROVIDERS.values() if p.embed_model] + ["fake"]
 
 
 # Ollama loads a model with a 4096-token window unless told otherwise. That is too small for
@@ -141,10 +132,12 @@ def context_tokens(provider: str | None) -> int:
 
 
 def _key(provider: Provider) -> str | None:
+    refresh_keys()
     return os.getenv(provider.key_env) if provider.key_env else None
 
 
 def _base_url(provider: Provider) -> str | None:
+    refresh_keys()
     if provider.id == "custom":
         return os.getenv("CUSTOM_BASE_URL") or None
     if provider.id == "ollama":
@@ -152,11 +145,11 @@ def _base_url(provider: Provider) -> str | None:
     return provider.base_url
 
 
-FAKE_ANSWER = "Two absences are allowed [page 3]."
+FAKE_ANSWER = "Hello from the Vesper demo model."
 
 
 def fake_llm_enabled() -> bool:
-    """VESPER_FAKE_LLM=1: offline fake chat model and fake embeddings, for UI end-to-end tests."""
+    """VESPER_FAKE_LLM=1: offline fake chat model, for UI end-to-end tests."""
     return os.getenv("VESPER_FAKE_LLM", "").strip().lower() in {"1", "true", "yes"}
 
 
@@ -296,55 +289,6 @@ def agent_middleware(llm) -> list:
     from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
 
     return [AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore")]
-
-
-class LocalEmbeddings(Embeddings):
-    """Free on-device embeddings (ONNX, no PyTorch). Downloads ~65 MB once."""
-
-    def __init__(self, model: str = LOCAL_EMBED_MODEL):
-        import shutil
-        import sys
-
-        from fastembed import TextEmbedding
-
-        cache = HOME / "models"
-        bundled = Path(getattr(sys, "_MEIPASS", "")) / "models"
-        if getattr(sys, "frozen", False) and bundled.is_dir() and not any(cache.glob("*")):
-            shutil.copytree(bundled, cache, dirs_exist_ok=True)  # installed app ships the model: no download
-        self._model = TextEmbedding(model_name=model, cache_dir=str(cache))
-
-    def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        return [v.tolist() for v in self._model.embed(texts)]
-
-    def embed_query(self, text: str) -> list[float]:
-        return next(iter(self._model.query_embed(text))).tolist()
-
-
-def get_embeddings(provider: str | None = None, model: str | None = None):
-    pid = (provider or os.getenv("EMBEDDINGS_PROVIDER", "local")).lower()
-    if pid == "local" and fake_llm_enabled():
-        pid = "fake"  # no model download in fake mode
-    if pid == "fake":
-        from langchain_core.embeddings import DeterministicFakeEmbedding
-
-        return DeterministicFakeEmbedding(size=256)
-    if pid == "local":
-        return LocalEmbeddings(model or os.getenv("EMBEDDINGS_MODEL") or LOCAL_EMBED_MODEL)
-    if pid == "huggingface":  # pip install -e ".[local]" (PyTorch)
-        from langchain_huggingface import HuggingFaceEmbeddings
-
-        return HuggingFaceEmbeddings(model_name=model or "sentence-transformers/all-MiniLM-L6-v2")
-    if pid not in PROVIDERS or not PROVIDERS[pid].embed_model:
-        raise ValueError(f"Unknown EMBEDDINGS_PROVIDER {pid!r}. Use one of {EMBEDDING_PROVIDERS}.")
-    p = PROVIDERS[pid]
-    from langchain_openai import OpenAIEmbeddings
-
-    return OpenAIEmbeddings(
-        model=model or os.getenv("EMBEDDINGS_MODEL") or p.embed_model,
-        base_url=_base_url(p),
-        api_key=_key(p) or "not-needed",
-        check_embedding_ctx_length=p.id == "openai",  # tiktoken pre-split only makes sense for OpenAI
-    )
 
 
 def list_models(provider: str, timeout: float = 6.0) -> list[str]:

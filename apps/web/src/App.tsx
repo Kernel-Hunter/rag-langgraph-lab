@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import {
-  closeSettings, getState, newChat, openSettings, refresh, stop, toast, toggleSidebar, toggleTranscript, uploadFiles, useStore,
+  attachFiles, closeSettings, getState, newChat, openSettings, refresh, stop, toggleSidebar, toggleTranscript, useStore,
 } from './packages/store/store'
 import { Effects } from './packages/ui-effects/Effects'
 import { Composer } from './packages/ui-input/Composer'
@@ -17,8 +17,6 @@ import './packages/ui-input/input.css'
 import './packages/ui-model-selection/model.css'
 import './packages/ui-settings/settings.css'
 import './packages/ui-effects/effects.css'
-
-const ACCEPT = /\.(pdf|md|txt)$/i
 
 export function App() {
   const sidebar = useStore(s => s.sidebar)
@@ -45,7 +43,7 @@ export function App() {
     return () => window.removeEventListener('keydown', onKey)
   }, [])
 
-  // Drop files anywhere to add them.
+  // Drop files, folders or images anywhere to attach them to the next message.
   useEffect(() => {
     const hasFiles = (e: DragEvent): boolean => !!e.dataTransfer?.types.includes('Files')
     const enter = (e: DragEvent): void => { if (!hasFiles(e)) return; e.preventDefault(); depth.current++; setDragging(true) }
@@ -57,12 +55,8 @@ export function App() {
       depth.current = 0
       setDragging(false)
       if (getState().settings.open) return // the dialog's own drop zone handles it
-      const files = [...(e.dataTransfer?.files ?? [])]
-      const ok = files.filter(f => ACCEPT.test(f.name))
-      if (ok.length < files.length) {
-        toast('Only PDF, Markdown and text files can be added.', 'error')
-      }
-      if (ok.length) void uploadFiles(ok)
+      void attachFiles([...(e.dataTransfer?.files ?? [])])
+      window.dispatchEvent(new Event('vesper:focus-composer'))
     }
     window.addEventListener('dragenter', enter)
     window.addEventListener('dragover', over)
@@ -89,7 +83,7 @@ export function App() {
       </div>
       <Settings />
       {dragging && (
-        <div className="drop-overlay"><div><Icon name="upload" size={34} />Drop to add to your documents</div></div>
+        <div className="drop-overlay"><div><Icon name="paperclip" size={34} />Drop to attach to your message</div></div>
       )}
       <Toasts />
     </>

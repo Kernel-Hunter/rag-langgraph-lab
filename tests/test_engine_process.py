@@ -14,7 +14,7 @@ READY = re.compile(r'^VESPER_READY \{"port": (\d+), "token": "([^"]+)"\}$')
 
 def _launch(tmp_path, **env):
     full = {**os.environ, "VESPER_HOME": str(tmp_path), "VESPER_FAKE_LLM": "1", "PYTHONUNBUFFERED": "1", **env}
-    (tmp_path / "config.json").write_text(json.dumps({"embeddings": "fake"}))
+    (tmp_path / "config.json").write_text(json.dumps({"provider": "groq"}))
     return subprocess.Popen([sys.executable, "-m", "vesper.desktop", "--engine"], env=full,
                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
@@ -52,7 +52,7 @@ def test_engine_handshake_and_exit_on_stdin_eof(tmp_path):
 
         status, body = _get(port, "/api/state", token)
         assert status == 200
-        assert json.loads(body)["settings"]["embeddings"] == "fake"
+        assert json.loads(body)["settings"]["provider"] == "groq"
         assert _get(port, "/api/state", "wrong")[0] == 401
         assert _get(port, "/api/state", token, host=f"evil.example:{port}")[0] == 403  # real hosts are enforced
         assert _get(port, "/api/state", token, host=f"localhost:{port}")[0] == 200

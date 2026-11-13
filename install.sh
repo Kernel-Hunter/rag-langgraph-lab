@@ -81,12 +81,6 @@ install_app() {
       rm -rf "${dest:?}/$APP.app"
       mv "$tmp/unpacked/$APP.app" "$dest/"
       xattr -dr com.apple.quarantine "$dest/$APP.app" 2>/dev/null || true
-      for old in "/Applications/RAG-Help-Desk.app" "$HOME/Applications/RAG-Help-Desk.app"; do
-        if [ -d "$old" ]; then
-          rm -rf "${old:?}"
-          say "Replaced the old RAG Help Desk app ($old) with Vesper."
-        fi
-      done
       say "Desktop app installed in $dest (find it in Launchpad or Spotlight)."
       ;;
     Linux)
@@ -114,14 +108,8 @@ Comment=AI agent for your folders and documents
 Exec=$dest/Vesper.AppImage %U
 Icon=$dest/icon.png
 Terminal=false
-Categories=Office;
+Categories=Development;
 EOF
-      # Remove the launcher of the old RAG Help Desk build, if any.
-      old="$HOME/.local/share/rag-help-desk"
-      if [ -d "$old" ]; then
-        rm -rf "${old:?}" "$HOME/.local/bin/rag-help-desk" "$HOME/.local/share/applications/rag-help-desk.desktop"
-        say "Replaced the old RAG Help Desk app with Vesper."
-      fi
       say "Desktop app installed. Start it from your app menu (\"Vesper\") or run: vesper-app"
       say "If it does not start, install libfuse2 (Ubuntu/Debian: sudo apt install libfuse2)."
       ;;

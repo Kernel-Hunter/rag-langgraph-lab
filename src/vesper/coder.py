@@ -10,7 +10,6 @@ Events from `Session.ask()`:
     ("tool_draft", {"name", "chars"})                the model is writing a tool call (its arguments so far)
     ("tool_start", {"id", "name", "args"})           the model called a tool
     ("tool_end", {"id", "name", "output", "ok", "ms"})
-    ("sources", {"query", "items"})                  document passages found by search_docs
     ("cwd", {"path"})                                the working directory changed
     ("tasks", {"items": [{"text", "status"}]})       the agent's task list changed
     ("notice", {"text"})                             something the user should know (context trimmed)
@@ -38,6 +37,7 @@ from langchain_core.messages import (
     ToolMessage,
 )
 
+from vesper.attachments import human_content, without_images
 from vesper.prompts import COMPACT_PROMPT, agent_system_prompt
 from vesper.store import Store, new_id
 from vesper.workspace import Workspace
@@ -151,7 +151,12 @@ def transcript(messages: list[BaseMessage]) -> list[dict]:
                 turns.append({"role": "assistant", "parts": [
                     {"type": "text", "text": "**Summary of the earlier conversation**\n\n" + body}]})
             else:
-                turns.append({"role": "user", "text": re.split(r"\n\n<(?:file path=|note>)", text)[0].strip()})
+                names = re.findall(r'<(?:file|folder) path="([^"]+)">', text)
+                names += re.findall(r"\[image (.+?) was shown to you in this message\]", text)
+                turn = {"role": "user", "text": re.split(r"\n\n<(?:file path=|folder path=|note>)|\n\[image ", text)[0].strip()}
+                if names:
+                    turn["attachments"] = names
+                turns.append(turn)
             continue
         if not turns or turns[-1]["role"] != "assistant":
             turns.append({"role": "assistant", "parts": []})
@@ -378,7 +383,6 @@ class Session:
         self._turn_id = 0                           # groups the file copies kept for undo
         self._copies: list[tuple[int, str, bytes | None]] = []  # (turn, path, old bytes), newest last
         self._undone: list[str] = []                # files put back by undo, to tell the model next turn
-        workspace.on_sources = self._on_sources
         workspace.on_cwd = self._on_cwd
         workspace.on_change = self._on_change
         workspace.on_tasks = lambda items: self._pending.append(("tasks", {"items": [dict(t) for t in items]}))
@@ -541,12 +545,6 @@ class Session:
         self._log("undo", detail={"paths": paths})
         return paths
 
-    def _on_sources(self, query: str, docs: list) -> None:
-        self._pending.append(("sources", {"query": query, "items": [
-            {"page": d.metadata.get("page"), "source": d.metadata.get("source"), "text": d.page_content}
-            for d in docs
-        ]}))
-
     def _on_cwd(self, path) -> None:
         self._pending.append(("cwd", {"path": str(path)}))
         self._log("cwd", detail={"path": str(path)})
@@ -573,9 +571,25 @@ class Session:
             self.title = " ".join(first_text.split())[:80]
             self.store.update_session(self.id, title=self.title)
 
+    def rename(self, title: str) -> None:
+        self.title = " ".join(title.split())[:80]
+        if self.store is not None and self._saved:
+            self.store.update_session(self.id, title=self.title)
+
+    def drop_last_turn(self) -> str | None:
+        """Forget the last question and everything after it (to ask it again). Returns its text."""
+        starts = [i for i, m in enumerate(self.history) if isinstance(m, HumanMessage)]
+        if not starts:
+            return None
+        last = self.history[starts[-1]]
+        self.history = self.history[:starts[-1]]
+        self._save()
+        return text_of(last.content)
+
     # ---------------------------------------------------------------- one turn
-    def ask(self, text: str, shown: str | None = None) -> Iterator[tuple[str, dict]]:
-        """`shown` is what the user typed when `text` also carries attached files (for titles and logs)."""
+    def ask(self, text: str, shown: str | None = None, images: list[dict] | None = None) -> Iterator[tuple[str, dict]]:
+        """`shown` is what the user typed when `text` also carries attached files (for titles and logs).
+        `images` are image content blocks (`attachments.image_block`), sent with this message only."""
         self.workspace.stopped = False
         self.workspace._seen.clear()
         self._ensure_saved(shown or text)
@@ -591,7 +605,7 @@ class Session:
         history, cut = fit_history(self.history, self._budget())
         if cut:
             yield "notice", {"text": "The conversation is long, so older tool output and turns were trimmed to fit the model."}
-        messages = [*history, HumanMessage(text)]
+        messages = [*history, HumanMessage(human_content(text, images or []))]
         final: list[BaseMessage] | None = None
         streamed_ids: set[str] = set()
         tool_started: dict[str, float] = {}
@@ -667,7 +681,8 @@ class Session:
         finally:
             # Keep what happened even if the turn was stopped or failed half way.
             if final:
-                self.history = repair_history(list(final))
+                self.history = [HumanMessage(without_images(m.content), id=m.id) if isinstance(m, HumanMessage) else m
+                                for m in repair_history(list(final))]
                 self._save()
         usage = self._usage(final or [], len(messages), started + (self.workspace.waited - waited_before), tools)
         self._log("usage", detail=usage, ms=int(usage["seconds"] * 1000))

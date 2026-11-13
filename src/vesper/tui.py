@@ -7,7 +7,6 @@
     vesper sessions             list saved conversations
     vesper logs [ID]            show what the agent did in a conversation
     vesper app                  open the desktop app
-    vesper ask|agent|chat|eval  document question answering from the command line
 
 Inside a session: type a request, `/` for commands, `@path` to attach a file, `!cmd` to run
 a shell command yourself, Shift+Tab to change how much Vesper may do without asking.
@@ -89,7 +88,7 @@ SLASH = {
     "/cd": "go to another folder: /cd ../other-project",
     "/new": "start a new conversation (the old one is saved)",
     "/resume": "go back to an earlier conversation",
-    "/sessions": "list saved conversations",
+    "/sessions": "list saved conversations (/sessions rm N deletes one, /sessions rename N title)",
     "/logs": "what the agent did in this conversation (/logs full for details)",
     "/verbose": "transcript view: show thinking and full tool output while working (ctrl+o)",
     "/transcript": "print this whole conversation in detail: thinking, commands, edits, output",
@@ -102,14 +101,13 @@ SLASH = {
     "/model": "switch provider and model",
     "/key": "set the API key for the current provider",
     "/mode": "ask | auto-edit | yolo | plan",
-    "/docs": "re-read documents for search_docs",
     "/app": "open the desktop app",
     "/exit": "quit (or ctrl+d)",
 }
-ALIASES = {"/clear": "/new", "/quit": "/exit", "/q": "/exit", "/history": "/sessions", "/log": "/logs",
+ALIASES = {"/clear": "/new", "/quit": "/exit", "/q": "/exit", "/history": "/sessions", "/delete": "/sessions rm", "/log": "/logs",
            "/rewind": "/undo", "/allow": "/permissions", "/thinking": "/think"}
 SHORTCUTS = [
-    ("@path", "attach a file to your message"),
+    ("@path", "attach a file, folder or image (@\"path with spaces\"); dropping an image file works too"),
     ("!command", "run a shell command yourself (!cd folder moves Vesper too)"),
     ("shift+tab", "cycle mode: ask → auto-edit → yolo → plan"),
     ("ctrl+o", "transcript view on or off (thinking and full tool output)"),
@@ -117,10 +115,31 @@ SHORTCUTS = [
     ("ctrl+c", "stop the answer · twice to quit"),
     ("↑ ↓", "previous messages"),
 ]
-MAX_MENTION_CHARS = 60_000
 MAX_PIPED_CHARS = 200_000  # text piped into one-shot mode
 STDIN_WAIT_S = 2.0         # how long one-shot mode waits for piped text when it already has a question
-MENTION = re.compile(r"(?<![\w/])@([\w./~\-]+)")
+MENTION = re.compile(r"""(?<![\w/])@(?:"([^"]+)"|'([^']+)'|((?:[\w./~\-+]|\\ )+))""")
+DROPPED = re.compile(r"""'(/[^']+)'|"(/[^"]+)"|((?:~|/)(?:[^\s\\]|\\ )+)""")
+
+
+def mention_refs(text: str) -> list[str]:
+    """Paths named with @: @src/app.py, @"a folder/with spaces", @my\\ file.txt."""
+    refs = []
+    for m in MENTION.finditer(text):
+        ref = (m.group(1) or m.group(2) or m.group(3).replace("\\ ", " ").rstrip(".,;:"))
+        if ref and ref not in refs:
+            refs.append(ref)
+    return refs
+
+
+def dropped_paths(text: str) -> list[str]:
+    """Absolute paths a terminal pastes when a file is dragged onto it (quoted or with escaped spaces)."""
+    found = []
+    for m in DROPPED.finditer(text):
+        raw = m.group(1) or m.group(2) or m.group(3).replace("\\ ", " ")
+        path = Path(raw).expanduser()
+        if path.is_file():
+            found.append(str(path))
+    return found
 
 
 def open_store():
@@ -180,17 +199,10 @@ class App:
 
     def build(self, resume: dict | None = None) -> None:
         from vesper import permissions
-        from vesper import providers as prov
         from vesper.workspace import Workspace
 
-        emb = self.cfg.get("embeddings") or "local"
-
-        def embeddings():
-            self._events.put(("status", {"text": "Reading the documents in this folder (first search only)"}))
-            return prov.get_embeddings(emb)
-
         self.workspace = Workspace(
-            self._start_root, approve=self._approve_from_tool, mode=self.mode, embeddings_factory=embeddings,
+            self._start_root, approve=self._approve_from_tool, mode=self.mode,
             on_auto=lambda action: self._events.put(("auto", action)),
             on_output=lambda line: self._events.put(("output", {"line": line})),
             rules=permissions.load_rules("allow_commands"), hosts=permissions.load_rules("allow_hosts"),
@@ -256,7 +268,7 @@ class App:
             self.renderer.restart("Working")
 
     # ----- one turn -----
-    def run_turn(self, text: str, shown: str | None = None) -> None:
+    def run_turn(self, text: str, shown: str | None = None, images: list | None = None) -> None:
         self.wait_idle()
         events = self._events = queue.Queue()
         stop = self._stop = threading.Event()
@@ -264,7 +276,7 @@ class App:
         self._finished = True
 
         def work() -> None:
-            gen = session.ask(text, shown=shown)
+            gen = session.ask(text, shown=shown, images=images)
             try:
                 for item in gen:
                     if stop.is_set():
@@ -497,25 +509,24 @@ class App:
         except OSError:
             pass
 
-    def expand_mentions(self, text: str) -> str:
-        """`@path` attaches that file to the message."""
-        from vesper.workspace import ToolError
+    def expand_mentions(self, text: str) -> tuple[str, list[dict]]:
+        """`@path` attaches a file, a folder or an image; so does an image path dropped into the terminal.
+        Returns (message text, image blocks)."""
+        from vesper import attachments as att
 
-        attached = []
-        for m in MENTION.finditer(text):
-            ref = m.group(1).rstrip(".,;:")
-            try:
-                if not self.workspace.resolve(ref).is_file():
-                    continue
-                body = self.workspace.read_file(ref, 1, 2000)
-            except ToolError as exc:
-                note(f"⎿  {ref} not attached: {exc}", WARN)
-                continue
-            except Exception:  # noqa: BLE001
-                continue
-            attached.append(f'<file path="{ref}">\n{body[:MAX_MENTION_CHARS]}\n</file>')
-            console.print(Text.assemble(("  ⎿  attached ", MUTED), (ref, ACCENT)))
-        return text + ("\n\n" + "\n\n".join(attached) if attached else "")
+        refs = mention_refs(text)
+        for path in dropped_paths(text):  # dragging a picture onto the terminal pastes its path
+            if Path(path).suffix.lower() in att.IMAGE_TYPES and path not in refs:
+                refs.append(path)
+        refs = [r for r in refs if r.startswith(("/", "~")) or self.workspace.resolve(r).exists()]
+        if not refs:
+            return text, []
+        out = att.attach(self.workspace, refs)
+        for name in out.names:
+            console.print(Text.assemble(("  ⎿  attached ", MUTED), (name, ACCENT)))
+        for problem in out.problems:
+            note(f"⎿  not attached: {problem}", WARN)
+        return out.message(text), out.images
 
     # ----- plan, undo, context, rules -----
     def offer_plan(self) -> bool:
@@ -629,6 +640,44 @@ class App:
             console.print(sessions_table(rows, self.session.id))
         return rows
 
+    def manage_sessions(self, arg: str) -> None:
+        words = arg.split(maxsplit=2)
+        if not words:
+            if self.show_sessions():
+                note("/resume N goes back to one · /sessions rm N deletes one · /sessions rename N title")
+            return
+        if self.store is None:
+            note("Session history is off.", WARN)
+            return
+        action, refs = words[0].lower(), words[1:]
+        rows = self.store.list_sessions(15)
+
+        def find(ref: str) -> dict | None:
+            row = rows[int(ref) - 1] if ref.isdigit() and 1 <= int(ref) <= len(rows) else self.store.get_session(ref)
+            if row is None:
+                note(f"No conversation matches {ref!r}. /sessions lists them.", WARN)
+            return row
+
+        if action in ("rm", "delete", "del", "remove") and refs:
+            targets = [find(r) for r in " ".join(refs).split()]
+            if None in targets:
+                return
+            for row in targets:
+                self.store.delete_session(row["id"])
+                if row["id"] == self.session.id:
+                    self.new_session()
+                note(f"Deleted {row['title'] or row['id']!r}.")
+        elif action == "rename" and len(refs) == 2:
+            row = find(refs[0])
+            if row is not None:
+                if row["id"] == self.session.id:
+                    self.session.rename(refs[1])
+                else:
+                    self.store.update_session(row["id"], title=refs[1])
+                note(f"Renamed to {' '.join(refs[1].split())[:80]!r}.")
+        else:
+            note("Use /sessions, /sessions rm N [N...], or /sessions rename N new title.", WARN)
+
     def resume(self, ref: str) -> None:
         if self.store is None:
             note("Session history is off.", WARN)
@@ -719,8 +768,7 @@ class App:
         elif cmd == "/resume":
             self.resume(arg)
         elif cmd == "/sessions":
-            if self.show_sessions():
-                note("/resume NUMBER goes back to one.")
+            self.manage_sessions(arg)
         elif cmd == "/logs":
             self.show_logs(arg)
         elif cmd == "/verbose":
@@ -755,10 +803,6 @@ class App:
         elif cmd == "/key":
             if ask_key(self.cfg.get("provider", "")):
                 self._reload_llm()
-        elif cmd == "/docs":
-            self.workspace.forget_index()
-            n = len(self.workspace.doc_files())
-            note(f"{n} document{'s' if n != 1 else ''} (PDF, Markdown, text) will be searched.")
         elif cmd == "/app":
             open_app()
         else:
@@ -818,7 +862,8 @@ class App:
                 self.shell(line[1:])
                 continue
             console.print()
-            self.run_turn(self.expand_mentions(line), shown=line)
+            message, images = self.expand_mentions(line)
+            self.run_turn(message, shown=line, images=images)
             console.print()
             if self.mode == "plan" and self._finished and self.offer_plan():
                 console.print()
@@ -845,8 +890,7 @@ def print_mode(root: Path, question: str, cfg: dict, mode: str, store=None, resu
     from vesper import permissions
 
     ws = Workspace(root, mode=mode, rules=permissions.load_rules("allow_commands"),
-                   hosts=permissions.load_rules("allow_hosts"),
-                   embeddings_factory=lambda: prov.get_embeddings(cfg.get("embeddings") or "local"))
+                   hosts=permissions.load_rules("allow_hosts"))
 
     def on_sigint(signum, frame):  # stop a running command first, or it would outlive us
         ws.cancel()
@@ -883,8 +927,11 @@ def print_mode(root: Path, question: str, cfg: dict, mode: str, store=None, resu
 
 # ---------------------------------------------------------------- `vesper sessions` and `vesper logs`
 def sessions_command(argv: list[str]) -> int:
-    ap = argparse.ArgumentParser(prog="vesper sessions", description="List saved conversations, newest first.")
-    ap.add_argument("-n", type=int, default=20, help="how many to show (default 20)")
+    if argv and argv[0] in ("rm", "delete", "rename"):
+        return sessions_change(argv)
+    ap = argparse.ArgumentParser(prog="vesper sessions", description="List saved conversations, newest first.",
+                                 epilog="Also: vesper sessions rm ID [ID...] · vesper sessions rename ID TITLE")
+    ap.add_argument("-n", type=positive, default=20, help="how many to show (default 20)")
     ap.add_argument("--here", action="store_true", help="only conversations in the current folder")
     ap.add_argument("--json", action="store_true", help="print JSON instead of a table")
     args = ap.parse_args(argv)
@@ -898,14 +945,52 @@ def sessions_command(argv: list[str]) -> int:
         note("No saved conversations yet. Start one with: vesper")
     else:
         console.print(sessions_table(rows))
-        note("vesper -r ID resumes one · vesper logs ID shows what the agent did")
+        note("vesper -r ID resumes one · vesper logs ID shows what the agent did · vesper sessions rm ID deletes one")
+    return 0
+
+
+def positive(value: str) -> int:
+    n = int(value)
+    if n < 1:
+        raise argparse.ArgumentTypeError("must be 1 or more")
+    return n
+
+
+def sessions_change(argv: list[str]) -> int:
+    """vesper sessions rm ID [ID...] | vesper sessions rename ID TITLE"""
+    store = open_store()
+    if store is None:
+        return 1
+    action, rest = argv[0], argv[1:]
+    if action == "rename":
+        if len(rest) < 2:
+            err_console.print("Usage: vesper sessions rename ID NEW TITLE", style=ERR)
+            return 2
+        row = store.get_session(rest[0])
+        if row is None:
+            err_console.print(f"No conversation matches {rest[0]!r}.", style=ERR)
+            return 1
+        store.update_session(row["id"], title=" ".join(rest[1:]))
+        note(f"Renamed {row['id']}.")
+        return 0
+    if not rest:
+        err_console.print("Usage: vesper sessions rm ID [ID...]  (vesper sessions lists the ids)", style=ERR)
+        return 2
+    rows = [store.get_session(ref) for ref in rest]
+    missing = [ref for ref, row in zip(rest, rows) if row is None]
+    if missing:
+        err_console.print(f"No conversation matches {', '.join(map(repr, missing))}. Nothing was deleted.", style=ERR)
+        return 1
+    for row in rows:
+        store.delete_session(row["id"])
+        note(f"Deleted {row['id']} {row['title']!r}.")
     return 0
 
 
 def logs_command(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(prog="vesper logs", description="Show what the agent did in a conversation.")
     ap.add_argument("id", nargs="?", help="session id or its first characters (default: the latest conversation)")
-    ap.add_argument("-n", type=int, default=200, help="how many events to show (default 200)")
+    ap.add_argument("-n", type=positive, default=200, help="how many events to show (default 200)")
     ap.add_argument("--full", action="store_true", help="include tool arguments and output")
     ap.add_argument("--json", action="store_true", help="print one JSON object per line")
     args = ap.parse_args(argv)
@@ -974,10 +1059,6 @@ def main(argv: list[str] | None = None) -> int:
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")
 
-    if argv and argv[0] in ("ask", "agent", "chat", "eval"):
-        from vesper.cli import main as lab_main
-
-        return lab_main(argv) or 0
     if argv and argv[0] == "app":
         open_app()
         return 0
@@ -985,10 +1066,18 @@ def main(argv: list[str] | None = None) -> int:
         return sessions_command(argv[1:])
     if argv and argv[0] == "logs":
         return logs_command(argv[1:])
+    if len(argv) == 1 and not argv[0].startswith("-"):
+        import difflib
+
+        close = difflib.get_close_matches(argv[0].lower(), ["sessions", "logs", "app"], n=1, cutoff=0.75)
+        if close and close[0] != argv[0]:
+            err_console.print(f"Did you mean `vesper {close[0]}`? To ask the agent a one-word question, "
+                              f"add a question mark: vesper \"{argv[0]}?\"", style=WARN)
+            return 2
 
     ap = argparse.ArgumentParser(
         prog="vesper", description="Vesper: an AI coding agent for your terminal.",
-        epilog="More: vesper sessions · vesper logs [ID] · vesper app · vesper ask | agent | chat | eval",
+        epilog="More: vesper sessions · vesper logs [ID] · vesper app",
     )
     ap.add_argument("prompt", nargs="*", help="ask once and print the answer instead of starting a session")
     ap.add_argument("-C", "--dir", default=".", help="folder to start in (default: the current folder)")

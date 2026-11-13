@@ -190,7 +190,6 @@ def test_system_prompt_is_general_and_reads_project_instructions(proj):
     assert str(proj) in text and "change_directory" in text and "Project instructions" not in text
     for word in ("MEDTECH", "handbook", "help desk"):
         assert word.lower() not in text.lower()
-        assert word.lower() not in (prompts.DOCS_PROMPT + prompts.DOCS_AGENT_PROMPT + prompts.DOCS_CHECK_PROMPT).lower()
     (proj / "AGENTS.md").write_text("Use tabs.\n")
     assert "Project instructions (AGENTS.md)" in prompts.agent_system_prompt(proj)
     (proj / "VESPER.md").write_text("Use spaces.\n")
@@ -269,34 +268,12 @@ def _json_tail(capsys, tui, argv):
     return capsys.readouterr().out
 
 
-def test_lab_cli_uses_saved_provider_and_reports_errors_briefly(monkeypatch, capsys, tmp_path):
-    from vesper import cli, onboarding
-
-    monkeypatch.setattr(onboarding, "load_config", lambda: {"provider": "groq", "model": "llama-x"})
-    monkeypatch.chdir(tmp_path)  # away from the repo's own .env
-    monkeypatch.delenv("LLM_PROVIDER", raising=False)
-    monkeypatch.delenv("LLM_MODEL", raising=False)
-    seen = {}
-
-    def get_llm(provider=None, model=None):
-        seen.update(provider=provider, model=model)
-        raise RuntimeError("Error code: 401 - incorrect api key")
-
-    monkeypatch.setattr(cli, "get_llm", get_llm)
-    doc = tmp_path / "d.md"
-    doc.write_text("# T\n\nhello\n")
-    assert cli.main(["ask", "hi", "--embeddings", "fake", "--docs", str(doc)]) == 1
-    assert seen == {"provider": "groq", "model": "llama-x"}
-    err = capsys.readouterr().err
-    assert "rejected the API key" in err and "Traceback" not in err
-
-
 # ---------------------------------------------------------------- desktop engine
 def test_engine_folder_follows_the_agent_and_saves_history(server, tmp_path, monkeypatch):
     proj = tmp_path / "proj"
     (proj / "sub").mkdir(parents=True)
     engine = server.Engine()
-    engine.update({"mode": "folder", "workspace": str(proj), "agent_mode": "yolo"})
+    engine.update({"workspace": str(proj), "agent_mode": "yolo"})
     llm = fake(call("change_directory", path="sub"), AIMessage("Moved."), AIMessage("Still here."))
     monkeypatch.setattr(engine, "llm", lambda: llm)
     events = list(engine.stream_answer("go into sub", "chat-a", []))
@@ -356,7 +333,7 @@ def test_engine_session_history_api(server, make_client, tmp_path, monkeypatch):
     proj.mkdir()
     (proj / "a.txt").write_text("alpha\n")
     engine = server.Engine()
-    engine.update({"mode": "folder", "workspace": str(proj), "agent_mode": "yolo"})
+    engine.update({"workspace": str(proj), "agent_mode": "yolo"})
     llm = fake(call("run_command", command="echo hello"), AIMessage("<think>done</think>It printed hello."),
                AIMessage("Second answer."))
     monkeypatch.setattr(engine, "llm", lambda: llm)
@@ -408,3 +385,41 @@ def test_one_shot_does_not_wait_forever_on_a_silent_stdin(proj):
         os.close(read_end)
         os.close(write_end)
     assert done.returncode == 0 and "Let me look at the folder first." in done.stdout
+
+
+# ---------------------------------------------------------------- terminal: deleting, renaming, attaching
+def test_vesper_sessions_rm_and_rename(store, proj, capsys, monkeypatch):
+    from vesper import tui
+
+    monkeypatch.setattr(tui, "open_store", lambda: store)
+
+    a = Session(fake(AIMessage("one")), Workspace(proj), store)
+    list(a.ask("first question"))
+    b = Session(fake(AIMessage("two")), Workspace(proj), store)
+    list(b.ask("second question"))
+    assert tui.main(["sessions", "rename", a.id, "Better", "name"]) == 0
+    assert store.get_session(a.id)["title"] == "Better name"
+    assert tui.main(["sessions", "rm", a.id, "nope123"]) == 1        # one unknown id: nothing deleted
+    assert store.get_session(a.id) is not None
+    assert tui.main(["sessions", "rm", a.id, b.id[:6]]) == 0
+    assert store.get_session(a.id) is None and store.get_session(b.id) is None
+    assert tui.main(["sessions", "rm"]) == 2
+    assert tui.main(["session"]) == 2 and "Did you mean `vesper sessions`" in capsys.readouterr().err
+    with pytest.raises(SystemExit):
+        tui.main(["logs", "-n", "-3"])
+
+
+def test_mentions_attach_files_folders_and_images(proj):
+    from vesper import tui
+    from vesper.attachments import IMAGE_TYPES
+
+    (proj / "docs dir").mkdir()
+    (proj / "docs dir" / "a.txt").write_text("alpha\n")
+    (proj / "pic.png").write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 20)
+    app = tui.App.__new__(tui.App)
+    app.workspace = Workspace(proj)
+    text, images = app.expand_mentions('look at @"docs dir" and @pic.png and @missing.txt')
+    assert '<folder path="docs dir">' in text and "a.txt" in text
+    assert len(images) == 1 and images[0]["mime_type"] == IMAGE_TYPES[".png"]
+    dropped, images = app.expand_mentions(f"what is {proj / 'pic.png'}")
+    assert len(images) == 1 and dropped.startswith("what is")

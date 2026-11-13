@@ -9,14 +9,12 @@ validated and size-capped.
 
 from __future__ import annotations
 
-import hashlib
 import hmac
 import json
 import os
 import queue
 import re
 import secrets
-import shutil
 import sys
 import threading
 import traceback
@@ -27,35 +25,25 @@ from urllib.parse import urlparse
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from langchain_core.vectorstores import InMemoryVectorStore
 from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import MutableHeaders
 
+from vesper import __version__
 from vesper import providers as prov
-from vesper.indexing import load_documents, split_documents
 
 if getattr(sys, "frozen", False):
     BUNDLE = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
     WEB_DIR = BUNDLE / "vesper" / "web"
-    SAMPLE = BUNDLE / "data" / "handbook.md"
 else:
     WEB_DIR = Path(__file__).parent / "web"
-    SAMPLE = Path(__file__).resolve().parents[2] / "data" / "handbook.md"
 
 CONFIG = prov.HOME / "config.json"
-DOCS_DIR = prov.HOME / "docs"
-INDEX_DIR = prov.HOME / "index"
-SEEDED = prov.HOME / ".seeded"
-DOC_TYPES = {".pdf", ".md", ".txt"}
-
-MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 MAX_JSON_BYTES = 256 * 1024
-MAX_DOCS = 200
-MAX_NAME_LEN = 200
-MAX_QUESTION_CHARS = 8000
+MAX_QUESTION_CHARS = 100_000
+MAX_CHAT_BYTES = 48 * 1024 * 1024  # a question with pasted images
+MAX_ATTACHMENTS = 20
 MAX_MODEL_LEN = 200
 MAX_KEY_LEN = 500
-MODES = ("folder", "graph", "agent")
 AGENT_MODES = ("ask", "auto-edit", "yolo", "plan")
 MAX_SESSIONS = 30
 APPROVAL_TIMEOUT_S = 600
@@ -78,45 +66,21 @@ SECURITY_HEADERS = {
 DEFAULTS = {
     "provider": "ollama",
     "model": "",
-    "embeddings": "local",
-    "embed_model": "",
-    "chunk_size": 600,
-    "chunk_overlap": 100,
-    "k": 3,
-    "mode": "folder",
-    "check": False,
     "workspace": "",
     "agent_mode": "ask",
     "thinking": "off",
 }
 
 
-def _text(content) -> str:
-    """Anthropic and others may return content blocks instead of a string."""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        return "".join(b.get("text", "") if isinstance(b, dict) else str(b) for b in content)
-    return str(content or "")
-
-
-# Embedding sources that are not chat providers.
-_EMBEDDING_LABELS = {"local": "The on-device embedding model", "fake": "The fake embedding model",
-                     "huggingface": "Hugging Face embeddings"}
+OBSOLETE_SETTINGS = ("embeddings", "embed_model", "chunk_size", "chunk_overlap", "k", "mode", "check")
 
 
 def friendly_error(exc: Exception, provider: str) -> str:
-    """`provider` is a chat provider id or an embeddings id ("local", "fake", ...)."""
+    """A short message for an error from `provider`'s model."""
     text = f"{type(exc).__name__}: {exc}"
     low = text.lower()
-    if provider in prov.PROVIDERS:
-        p = prov.PROVIDERS[provider]
-        label, local = p.label, p.local
-    else:
-        label, local = _EMBEDDING_LABELS.get(provider, provider or "The provider"), False
-        if provider == "local" and ("connection" in low or "download" in low or "resolve" in low):
-            return ("Could not download the on-device embedding model (about 65 MB, needed once). "
-                    "Check your internet connection, then press Reindex.")
+    p = prov.PROVIDERS.get(provider)
+    label, local = (p.label, p.local) if p else (provider or "The provider", False)
     if "401" in text or "authentication" in low or "invalid x-api-key" in low or "incorrect api key" in low:
         return f"{label} rejected the API key. Open Settings and paste a valid key."
     if "connection" in low and local:
@@ -132,14 +96,6 @@ def friendly_error(exc: Exception, provider: str) -> str:
 
 def _bad(message: str):
     raise HTTPException(400, message)
-
-
-def _int_field(name: str, value, lo: int, hi: int) -> int:
-    if isinstance(value, bool) or not isinstance(value, int):
-        _bad(f"{name} must be a whole number.")
-    if not lo <= value <= hi:
-        _bad(f"{name} must be between {lo} and {hi}.")
-    return value
 
 
 def _text_field(name: str, value, max_len: int) -> str:
@@ -171,24 +127,8 @@ def _check_field(name: str, value) -> object:
         if value not in prov.PROVIDERS:
             _bad(f"Unknown provider {str(value)[:50]!r}.")
         return value
-    if name in ("model", "embed_model"):
+    if name == "model":
         return _text_field(name, value, MAX_MODEL_LEN)
-    if name == "embeddings":
-        if value not in prov.EMBEDDING_PROVIDERS:
-            _bad(f"embeddings must be one of {', '.join(prov.EMBEDDING_PROVIDERS)}.")
-        return value
-    if name == "chunk_size":
-        return _int_field(name, value, 100, 4000)
-    if name == "chunk_overlap":
-        if isinstance(value, bool) or not isinstance(value, int):
-            _bad("chunk_overlap must be a whole number.")
-        return value  # range depends on chunk_size, see _fix_overlap
-    if name == "k":
-        return _int_field(name, value, 1, 20)
-    if name == "mode":
-        if value not in MODES:
-            _bad("mode must be folder, graph or agent.")
-        return value
     if name == "agent_mode":
         if value not in AGENT_MODES:
             _bad("agent_mode must be ask, auto-edit, yolo or plan.")
@@ -211,18 +151,7 @@ def _check_field(name: str, value) -> object:
         if not folder.is_dir():
             _bad("That folder does not exist.")
         return str(folder)
-    if name == "check":
-        if not isinstance(value, bool):
-            _bad("check must be true or false.")
-        return value
     raise KeyError(name)
-
-
-def _fix_overlap(settings: dict) -> None:
-    """chunk_overlap must be in 0..min(1000, chunk_size - 1); otherwise use chunk_size // 5."""
-    size, overlap = settings["chunk_size"], settings["chunk_overlap"]
-    if not 0 <= overlap <= min(1000, size - 1):
-        settings["chunk_overlap"] = size // 5
 
 
 def validate_settings(values, current: dict) -> tuple[dict, dict, str | None]:
@@ -236,7 +165,6 @@ def validate_settings(values, current: dict) -> tuple[dict, dict, str | None]:
     for name, value in values.items():
         if name in DEFAULTS:
             new[name] = _check_field(name, value)
-    _fix_overlap(new)
 
     env: dict[str, str] = {}
     keys = values.get("keys")
@@ -269,25 +197,7 @@ def _load_saved_settings() -> dict:
                     settings[name] = _check_field(name, value)
                 except HTTPException:
                     pass
-    _fix_overlap(settings)
     return settings
-
-
-def clean_doc_name(name) -> str:
-    """A safe file name for DOCS_DIR, or HTTPException(400)."""
-    if not isinstance(name, str):
-        _bad("Missing file name.")
-    base = re.split(r"[\\/]", name)[-1]
-    safe = re.sub(r"[^\w.\- ]+", "_", base).strip()
-    if not safe or not safe.strip("._ -"):
-        _bad("The file name is empty.")
-    if safe.startswith("."):
-        _bad("Hidden files are not accepted.")
-    if len(safe) > MAX_NAME_LEN:
-        _bad(f"The file name is longer than {MAX_NAME_LEN} characters.")
-    if Path(safe).suffix.lower() not in DOC_TYPES:
-        _bad("Only .pdf, .md and .txt files are supported.")
-    return safe
 
 
 async def read_capped(request: Request, limit: int) -> bytes:
@@ -341,7 +251,7 @@ class GuardMiddleware:
 
 
 class Engine:
-    """Holds settings, the index and the models."""
+    """Holds the settings, the model and the open chats."""
 
     def __init__(self):
         prov.HOME.mkdir(parents=True, exist_ok=True)
@@ -349,20 +259,11 @@ class Engine:
             prov.HOME.chmod(0o700)
         except OSError:  # Windows ignores POSIX modes
             pass
-        DOCS_DIR.mkdir(exist_ok=True)
-        INDEX_DIR.mkdir(exist_ok=True)
-        # The sample goes in once, on first launch. Deleting it later must stick.
-        if not SEEDED.exists():
-            if not any(DOCS_DIR.iterdir()) and SAMPLE.exists():
-                shutil.copy(SAMPLE, DOCS_DIR / "sample-handbook.md")
-            SEEDED.write_text("sample handbook added once; delete this file to add it again\n")
         self.settings = _load_saved_settings()
-        self.lock = threading.Lock()
-        self._rebuild_flag = threading.Lock()
-        self._rebuild_running = False
-        self._rebuild_dirty = False
-        self.store = None
-        self.index = {"status": "idle", "chunks": 0, "pages": 0, "error": None, "warnings": []}
+        try:
+            self._config_mtime = CONFIG.stat().st_mtime_ns
+        except OSError:
+            self._config_mtime = None
         self._llm = None
         self._llm_key = None
         self._sessions: OrderedDict[str, dict] = OrderedDict()
@@ -383,21 +284,40 @@ class Engine:
         return self._history_db or None
 
     # ----- settings -----
-    def save(self):
-        """Merge into config.json: the terminal UI keeps its own keys in the same file."""
+    def sync_settings(self) -> None:
+        """Re-read config.json when another Vesper process (the terminal app) changed it."""
+        try:
+            mtime = CONFIG.stat().st_mtime_ns
+        except OSError:
+            mtime = None
+        if mtime != self._config_mtime:
+            fresh = _load_saved_settings()
+            if fresh != self.settings:
+                self.settings, self._llm = fresh, None
+            self._config_mtime = mtime
+
+    def save(self, changed: dict | None = None):
+        """Write `changed` (default: every setting) into config.json, keeping what else is there:
+        the terminal app keeps its own values in the same file."""
         try:
             current = json.loads(CONFIG.read_text()) if CONFIG.exists() else {}
         except (OSError, ValueError):
             current = {}
         if not isinstance(current, dict):
             current = {}
-        tmp = CONFIG.with_name("config.json.tmp")
-        tmp.write_text(json.dumps({**current, **self.settings}, indent=2))
+        for name in OBSOLETE_SETTINGS:  # left by older versions
+            current.pop(name, None)
+        tmp = CONFIG.with_name(f"config.json.{secrets.token_hex(4)}.tmp")
+        tmp.write_text(json.dumps({**current, **(self.settings if changed is None else changed)}, indent=2))
         os.replace(tmp, CONFIG)
+        try:
+            self._config_mtime = CONFIG.stat().st_mtime_ns
+        except OSError:
+            pass
 
-    def update(self, values: dict) -> bool:
-        """Apply new settings. Returns True when the index must be rebuilt."""
-        before = self._fingerprint()
+    def update(self, values: dict) -> None:
+        """Apply new settings; keys go to the .env file the terminal app reads too."""
+        self.sync_settings()
         new, env, custom_url = validate_settings(values, self.settings)
         if custom_url is not None:
             env["CUSTOM_BASE_URL"] = custom_url
@@ -406,110 +326,11 @@ class Engine:
                 prov.save_user_settings(env)
             except ValueError as exc:
                 raise HTTPException(400, str(exc)) from exc
+        changed = {k: v for k, v in new.items() if self.settings.get(k) != v}
         self.settings = new
-        self.save()
+        if changed:
+            self.save(changed)
         self._llm = None
-        keys = values.get("keys") or {}
-        embed_key_changed = any(
-            prov.PROVIDERS.get(pid) and prov.PROVIDERS[pid].key_env in env and pid == self.settings["embeddings"]
-            for pid in keys
-        )
-        return self._fingerprint() != before or embed_key_changed or self.store is None
-
-    # ----- documents and index -----
-    def docs(self) -> list[dict]:
-        return [
-            {"name": f.name, "size": f.stat().st_size}
-            for f in sorted(DOCS_DIR.iterdir())
-            if f.is_file() and f.suffix.lower() in DOC_TYPES
-        ]
-
-    def _fingerprint(self) -> str:
-        s = self.settings
-        files = []
-        for d in self.docs():
-            try:
-                files.append((d["name"], d["size"], (DOCS_DIR / d["name"]).stat().st_mtime))
-            except OSError:  # removed while we were listing
-                continue
-        raw = json.dumps([files, s["embeddings"], s["embed_model"], s["chunk_size"], s["chunk_overlap"]])
-        return hashlib.sha256(raw.encode()).hexdigest()[:16]
-
-    def rebuild_async(self):
-        """Rebuild in the background. Calls made while one runs are merged into one more pass."""
-        with self._rebuild_flag:
-            if self._rebuild_running:
-                self._rebuild_dirty = True
-                return
-            self._rebuild_running = True
-            self._rebuild_dirty = False
-        threading.Thread(target=self._rebuild_loop, daemon=True).start()
-
-    def _rebuild_loop(self):
-        while True:
-            try:
-                self.rebuild()
-            except Exception:
-                traceback.print_exc()
-            with self._rebuild_flag:
-                if not self._rebuild_dirty:
-                    self._rebuild_running = False
-                    return
-                self._rebuild_dirty = False
-
-    def rebuild(self):
-        with self.lock:
-            s = self.settings
-            if not self.docs():
-                self.store = None
-                self.index = {"status": "empty", "chunks": 0, "pages": 0, "error": None, "warnings": []}
-                return
-            warnings: list[dict] = []
-            try:
-                key = self._fingerprint()
-                self.index = {**self.index, "status": "loading", "error": None}
-                emb = prov.get_embeddings(s["embeddings"], s["embed_model"] or None)
-                cache = INDEX_DIR / f"{key}.json"
-                docs = load_documents(DOCS_DIR, warnings=warnings)
-                if cache.exists():
-                    store = InMemoryVectorStore.load(str(cache), emb)
-                    chunks = len(store.store)
-                else:
-                    self.index = {**self.index, "status": "embedding"}
-                    parts = split_documents(docs, s["chunk_size"], s["chunk_overlap"])
-                    store = InMemoryVectorStore(emb)
-                    store.add_documents(parts)
-                    store.dump(str(cache))
-                    chunks = len(parts)
-                    for old in sorted(INDEX_DIR.glob("*.json"), key=lambda f: f.stat().st_mtime)[:-5]:
-                        old.unlink(missing_ok=True)  # keep the 5 most recent caches
-                self.store = store
-                self.index = {"status": "ready", "chunks": chunks, "pages": len(docs), "error": None,
-                              "warnings": warnings}
-            except Exception as exc:
-                traceback.print_exc()
-                self.store = None
-                self.index = {"status": "error", "chunks": 0, "pages": 0,
-                              "error": friendly_error(exc, s["embeddings"]),
-                              "warnings": warnings}
-
-    def add_doc(self, name: str, data: bytes) -> str:
-        safe = clean_doc_name(name)
-        target = DOCS_DIR / safe
-        if not target.exists() and len(self.docs()) >= MAX_DOCS:
-            raise HTTPException(409, f"You can index at most {MAX_DOCS} documents. Remove one first.")
-        tmp = DOCS_DIR / f".{safe}.{secrets.token_hex(4)}.upload"  # unique, so parallel uploads never collide
-        try:
-            tmp.write_bytes(data)
-            os.replace(tmp, target)
-        finally:
-            tmp.unlink(missing_ok=True)
-        return safe
-
-    def remove_doc(self, name: str):
-        target = DOCS_DIR / clean_doc_name(name)
-        if target.is_file():
-            target.unlink()
 
     # ----- chat -----
     def llm(self):
@@ -521,76 +342,17 @@ class Engine:
         return self._llm
 
     def stream_answer(self, question: str, chat_id: str | None = None, history: list | None = None,
-                      session_id: str | None = None):
+                      session_id: str | None = None, attachments: list | None = None, images: list | None = None,
+                      retry: bool = False):
         """Yields (event, data) pairs for the chat stream.
 
-        `session_id` continues a conversation saved in the session database (Folder mode).
+        `session_id` continues a conversation saved in the session database. `attachments` are
+        paths of files or folders, `images` are pasted pictures ({name, mime, data} in base64).
+        `retry` forgets the chat's last question and answer first, to ask again.
         """
-        s = self.settings
-        if s["mode"] == "folder":
-            yield from self._stream_folder(question, chat_id or "default", history or [], session_id)
-            return
-        if self.store is None:
-            msg = self.index.get("error") or "Add a document first, then ask."
-            yield "error", {"message": msg}
-            yield "done", {}
-            return
-        try:
-            llm = self.llm()
-            if s["mode"] == "agent":
-                yield from self._stream_agent(question, llm)
-            else:
-                yield from self._stream_graph(question, llm)
-        except Exception as exc:
-            traceback.print_exc()
-            yield "error", {"message": friendly_error(exc, s["provider"])}
-        yield "done", {}
-
-    @staticmethod
-    def _sources(docs):
-        return [{"page": d.metadata.get("page"), "source": d.metadata.get("source"), "text": d.page_content}
-                for d in docs]
-
-    def _stream_graph(self, question, llm):
-        from vesper.graph import build_graph
-
-        graph = build_graph(self.store, llm, k=self.settings["k"], check=self.settings["check"])
-        streamed = False
-        for mode, chunk in graph.stream({"question": question}, stream_mode=["updates", "messages"]):
-            if mode == "updates":
-                if "retrieve" in chunk:
-                    yield "sources", {"items": self._sources(chunk["retrieve"]["context"])}
-                if "generate" in chunk and not streamed:  # model that does not stream
-                    yield "token", {"text": _text(chunk["generate"]["answer"])}
-                if "check" in chunk:
-                    yield "check", {"supported": chunk["check"]["supported"]}
-            else:
-                msg, meta = chunk
-                if meta.get("langgraph_node") == "generate":
-                    text = _text(msg.content)
-                    if text:
-                        streamed = True
-                        yield "token", {"text": text}
-
-    def _stream_agent(self, question, llm):
-        from vesper.agent import build_agent
-
-        searches: list = []
-        agent = build_agent(self.store, llm, k=self.settings["k"], recorder=searches)
-        seen = 0
-        for mode, chunk in agent.stream({"messages": [{"role": "user", "content": question}]},
-                                        stream_mode=["updates", "messages"]):
-            while seen < len(searches):
-                query, docs = searches[seen]
-                seen += 1
-                yield "search", {"query": query}
-                yield "sources", {"items": self._sources(docs)}
-            if mode == "messages":
-                msg, meta = chunk
-                if meta.get("langgraph_node") == "model" and not getattr(msg, "tool_call_chunks", None):
-                    text = _text(msg.content)
-                    if text:
-                        yield "token", {"text": text}
+        self.sync_settings()
+        yield from self._stream_folder(question, chat_id or "default", history or [], session_id,
+                                       attachments or [], images or [], retry)
 
     # ----- folder agent -----
     def _folder_session(self, chat_id: str, history: list, session_id: str | None = None):
@@ -603,7 +365,7 @@ class Engine:
         from vesper.workspace import Workspace
 
         s = self.settings
-        key = (s["provider"], s["model"], s["embeddings"], s["thinking"])
+        key = (s["provider"], s["model"], s["thinking"])
         rules, hosts = permissions.load_rules("allow_commands"), permissions.load_rules("allow_hosts")
         with self._sessions_lock:
             entry = self._sessions.get(chat_id)
@@ -616,15 +378,13 @@ class Engine:
                     entry["picked"] = s["workspace"]
                     ws.change_directory(s["workspace"])
                 return entry
-            emb = s["embeddings"]
             db = self.history_db()
             saved = db.get_session(session_id) if db is not None and session_id and entry is None else None
             if saved and Path(saved["cwd"]).is_dir():  # a saved conversation continues where it was
                 self.settings["workspace"] = saved["cwd"]
-                self.save()
+                self.save({"workspace": saved["cwd"]})
             ws = Workspace(Path(s["workspace"]), mode=s["agent_mode"], rules=rules, hosts=hosts,
-                           on_rule=lambda key, rule: permissions.save_rule(rule, key),
-                           embeddings_factory=lambda: prov.get_embeddings(emb, s["embed_model"] or None))
+                           on_rule=lambda key, rule: permissions.save_rule(rule, key))
             session = Session(self.llm(), ws, db, session_id=saved["id"] if saved else None, source="desktop",
                               provider=s["provider"], model=s["model"],
                               context_tokens=prov.context_tokens(s["provider"]))
@@ -645,12 +405,11 @@ class Engine:
                 self._sessions.popitem(last=False)
             return entry
 
-    def _stream_folder(self, question: str, chat_id: str, history: list, session_id: str | None = None):
+    def _stream_folder(self, question: str, chat_id: str, history: list, session_id: str | None = None,
+                       attachments: list | None = None, images: list | None = None, retry: bool = False):
         s = self.settings
-        if not s["workspace"]:
-            yield "error", {"message": "Open a folder first: click the folder button at the top."}
-            yield "done", {}
-            return
+        if not s["workspace"]:  # no project opened yet: start in the home folder, like a terminal does
+            s["workspace"] = str(Path.home())
         try:
             entry = self._folder_session(chat_id, history, session_id)
         except Exception as exc:
@@ -666,6 +425,16 @@ class Engine:
         closed = threading.Event()
         mine: list[str] = []
         session = entry["session"]
+        entry["stop"] = lambda: (closed.set(), session.workspace.cancel())
+        if retry:
+            session.drop_last_turn()
+        try:
+            text, image_blocks, shown = self._attach(session.workspace, question, attachments or [], images or [])
+        except HTTPException as exc:
+            entry["lock"].release()
+            yield "error", {"message": exc.detail}
+            yield "done", {}
+            return
 
         def approve(action: dict) -> str:
             if closed.is_set():
@@ -686,15 +455,17 @@ class Engine:
         session.workspace.on_output = lambda line: events.put(("output", {"line": line[:2000]}))
         session.workspace.on_auto = lambda action: events.put(("auto", action))
         yield "session", {"id": session.id, "cwd": str(session.workspace.root)}
+        if shown["names"] or shown["problems"]:
+            yield "attached", {"names": shown["names"], "problems": shown["problems"]}
 
         def work():
             try:
-                for item in session.ask(question):
+                for item in session.ask(text, shown=shown["question"], images=image_blocks):
                     if closed.is_set():
                         break
                     if item[0] == "cwd":  # the agent moved: the app's folder follows it
                         entry["picked"] = self.settings["workspace"] = item[1]["path"]
-                        self.save()
+                        self.save({"workspace": item[1]["path"]})
                     if item[0] != "done":
                         events.put(item)
             except Exception as exc:
@@ -715,12 +486,61 @@ class Engine:
             # The client went away or the answer ended: stop commands, refuse anything still waiting.
             closed.set()
             session.workspace.cancel()
+            entry.pop("stop", None)
             for aid in mine:
                 slot = self._approvals.pop(aid, None)
                 if slot is not None:
                     slot["answer"] = "no"
                     slot["event"].set()
         yield "done", {}
+
+    @staticmethod
+    def _attach(workspace, question: str, refs: list, images: list):
+        """(message text, image blocks, {"question", "names", "problems"}) for one question."""
+        import base64
+        import binascii
+
+        from vesper import attachments as att
+
+        out = att.attach(workspace, [r for r in refs if isinstance(r, str)][:MAX_ATTACHMENTS])
+        for img in images[:att.MAX_IMAGES]:
+            name = str(img.get("name") or "pasted image")[:120] if isinstance(img, dict) else "image"
+            mime = img.get("mime") if isinstance(img, dict) else None
+            if mime not in att.IMAGE_TYPES.values():
+                out.problems.append(f"{name}: only PNG, JPEG, GIF and WebP images can be attached")
+                continue
+            try:
+                data = base64.b64decode(str(img.get("data", "")), validate=True)
+            except (binascii.Error, ValueError):
+                out.problems.append(f"{name}: the image data is damaged")
+                continue
+            if len(data) > att.MAX_IMAGE_BYTES:
+                out.problems.append(f"{name}: images must be under 5 MB")
+                continue
+            out.images.append(att.image_block(data, mime, name))
+            out.names.append(name)
+        return out.message(question), out.images, {"question": question, "names": out.names, "problems": out.problems}
+
+    def stop_chat(self, chat_id: str) -> bool:
+        """Stop a running answer: end its command and refuse the next tool call."""
+        entry = self._sessions.get(chat_id)
+        stop = entry.get("stop") if entry else None
+        if stop is None:
+            return False
+        stop()
+        return True
+
+    def rename_chat(self, session_id: str, title: str) -> None:
+        db = self.history_db()
+        if db is None:
+            raise HTTPException(503, "The session database cannot be opened.")
+        if db.get_session(session_id) is None:
+            raise HTTPException(404, "That conversation is not in the history.")
+        with self._sessions_lock:
+            for entry in self._sessions.values():
+                if entry["session"].id == session_id:
+                    entry["session"].title = title
+        db.update_session(session_id, title=title)
 
     def answer_approval(self, aid: str, answer: str) -> bool:
         slot = self._approvals.get(aid)
@@ -784,12 +604,14 @@ class Engine:
     def delete_saved_session(self, session_id: str) -> None:
         db = self.history_db()
         if db is None:
-            return
+            raise HTTPException(503, "The session database cannot be opened.")
+        if db.get_session(session_id) is None:
+            raise HTTPException(404, "That conversation is not in the history.")
         with self._sessions_lock:
             for chat_id, entry in list(self._sessions.items()):
                 if entry["session"].id == session_id:
                     del self._sessions[chat_id]
-        db.delete_session(session_id)
+        db.delete_session(db.get_session(session_id)["id"])
 
     # ----- view -----
     def state(self) -> dict:
@@ -800,14 +622,14 @@ class Engine:
                     "id": p.id, "label": p.label, "local": p.local, "key_url": p.key_url,
                     "needs_key": bool(p.key_env) and not p.local,
                     "has_key": bool(prov._key(p)), "chat_model": p.chat_model,
-                    "embeddings": bool(p.embed_model), "suggestions": list(p.suggestions),
+                    "suggestions": list(p.suggestions),
                 }
                 for p in prov.PROVIDERS.values()
             ],
             "custom_base_url": os.getenv("CUSTOM_BASE_URL", ""),
             "settings": dict(self.settings),
-            "index": self.index,
-            "docs": self.docs(),
+            "version": __version__,
+            "home": str(Path.home()),
         }
 
 
@@ -836,12 +658,12 @@ def create_app(token: str, engine: Engine | None = None, allowed_hosts=None) -> 
 
     @app.get("/api/state", dependencies=[Depends(auth)])
     def state():
+        engine.sync_settings()
         return engine.state()
 
     @app.post("/api/settings", dependencies=[Depends(auth)])
     async def settings(request: Request):
-        if engine.update(await json_body(request)):
-            engine.rebuild_async()
+        engine.update(await json_body(request))
         return engine.state()
 
     @app.get("/api/models", dependencies=[Depends(auth)])
@@ -850,27 +672,12 @@ def create_app(token: str, engine: Engine | None = None, allowed_hosts=None) -> 
             raise HTTPException(404, "unknown provider")
         return {"models": prov.list_models(provider)}
 
-    @app.post("/api/docs", dependencies=[Depends(auth)])
-    async def add_doc(request: Request, name: str):
-        clean_doc_name(name)  # fail fast, before reading the body
-        engine.add_doc(name, await read_capped(request, MAX_UPLOAD_BYTES))
-        engine.rebuild_async()
-        return engine.state()
-
-    @app.delete("/api/docs/{name}", dependencies=[Depends(auth)])
-    def remove_doc(name: str):
-        engine.remove_doc(name)
-        engine.rebuild_async()
-        return engine.state()
-
-    @app.post("/api/reindex", dependencies=[Depends(auth)])
-    def reindex():
-        engine.rebuild_async()
-        return engine.state()
-
     @app.post("/api/chat", dependencies=[Depends(auth)])
     async def chat(request: Request):
-        body = await json_body(request)
+        try:
+            body = json.loads(await read_capped(request, MAX_CHAT_BYTES))
+        except ValueError:
+            raise HTTPException(400, "The request body must be JSON.") from None
         question = body.get("question") if isinstance(body, dict) else None
         if question is not None and not isinstance(question, str):
             raise HTTPException(400, "question must be text.")
@@ -889,8 +696,13 @@ def create_app(token: str, engine: Engine | None = None, allowed_hosts=None) -> 
         if session_id is not None and not (isinstance(session_id, str) and SESSION_ID.match(session_id)):
             raise HTTPException(400, "session_id is not a session id.")
 
+        attachments, images = body.get("attachments") or [], body.get("images") or []
+        if not isinstance(attachments, list) or not isinstance(images, list):
+            raise HTTPException(400, "attachments and images must be lists.")
+        retry = body.get("retry") is True
+
         def events():
-            for event, data in engine.stream_answer(question, chat_id, history, session_id):
+            for event, data in engine.stream_answer(question, chat_id, history, session_id, attachments, images, retry):
                 yield f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
         return StreamingResponse(events(), media_type="text/event-stream",
@@ -959,9 +771,25 @@ def create_app(token: str, engine: Engine | None = None, allowed_hosts=None) -> 
 
     @app.delete("/api/sessions/{session_id}", dependencies=[Depends(auth)])
     def delete_session(session_id: str):
-        if SESSION_ID.match(session_id):
-            engine.delete_saved_session(session_id)
+        if not SESSION_ID.match(session_id):
+            raise HTTPException(400, "That is not a session id.")
+        engine.delete_saved_session(session_id)
         return {"ok": True}
+
+    @app.post("/api/sessions/{session_id}/rename", dependencies=[Depends(auth)])
+    async def rename_session(request: Request, session_id: str):
+        body = await json_body(request)
+        title = body.get("title") if isinstance(body, dict) else None
+        if not SESSION_ID.match(session_id) or not isinstance(title, str) or not title.strip():
+            raise HTTPException(400, "Send a title.")
+        engine.rename_chat(session_id, " ".join(title.split())[:80])
+        return {"ok": True}
+
+    @app.post("/api/chats/{chat_id}/stop", dependencies=[Depends(auth)])
+    def stop_chat(chat_id: str):
+        if not CHAT_ID.match(chat_id):
+            raise HTTPException(400, "chat_id must be 1-64 letters, digits, - or _.")
+        return {"stopped": engine.stop_chat(chat_id)}
 
     @app.delete("/api/chats/{chat_id}", dependencies=[Depends(auth)])
     def forget_chat(chat_id: str):

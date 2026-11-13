@@ -163,6 +163,17 @@ ipcMain.handle('vesper:pick-folder', async (event) => {
   return result.canceled ? null : (result.filePaths[0] ?? null)
 })
 
+// Native file picker for attachments: any files, several at once (folders too on macOS).
+ipcMain.handle('vesper:pick-files', async (event) => {
+  if (!sameOrigin(event.senderFrame?.url ?? '')) return []
+  const owner = BrowserWindow.fromWebContents(event.sender)
+  const properties: ('openFile' | 'openDirectory' | 'multiSelections')[] = ['openFile', 'multiSelections']
+  if (process.platform === 'darwin') properties.push('openDirectory')
+  const options = { title: 'Attach files', properties }
+  const result = owner ? await dialog.showOpenDialog(owner, options) : await dialog.showOpenDialog(options)
+  return result.canceled ? [] : result.filePaths.slice(0, 20)
+})
+
 function lockDownSession(): void {
   const ses = session.defaultSession
   ses.setPermissionRequestHandler((_wc, permission, callback) => callback(ALLOWED_PERMISSIONS.has(permission)))

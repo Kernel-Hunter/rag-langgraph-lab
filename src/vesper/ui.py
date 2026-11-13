@@ -39,14 +39,14 @@ MODES = {
 }
 TOOL_LABELS = {
     "list_files": "List", "read_file": "Read", "glob": "Find", "grep": "Search",
-    "search_docs": "Search docs", "change_directory": "Go to", "write_file": "Write",
+    "change_directory": "Go to", "write_file": "Write",
     "edit_file": "Edit", "run_command": "Run", "update_tasks": "Tasks", "web_fetch": "Fetch",
     "web_search": "Search the web",
 }
 # The argument that says most about a tool call.
 MAIN_ARG = {
     "read_file": "path", "write_file": "path", "edit_file": "path", "list_files": "path",
-    "change_directory": "path", "glob": "pattern", "grep": "pattern", "search_docs": "query",
+    "change_directory": "path", "glob": "pattern", "grep": "pattern",
     "run_command": "command", "web_fetch": "url", "web_search": "query",
 }
 LIVE_OUTPUT_LINES = 5     # lines of a running command kept on screen
@@ -182,9 +182,6 @@ def summarize_output(name: str, output: str, ok: bool, limit: int = 6) -> Text:
         return Text(f"{n} result{'s' if n != 1 else ''}", style=MUTED)
     if name == "list_files":
         return Text(f"{max(0, len(lines) - 1)} entries", style=MUTED)
-    if name == "search_docs":
-        n = output.count("\n\n") + 1 if output.startswith("[") else 0
-        return Text(f"{n} passage{'s' if n != 1 else ''}" if n else output[:120], style=MUTED)
     if name == "change_directory":
         return Text(short_path(lines[0].removeprefix("Working directory is now ")) if lines else "", style=MUTED)
     if name == "run_command":

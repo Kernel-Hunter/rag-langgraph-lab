@@ -11,7 +11,7 @@ export const uid = (): string =>
     : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
 
 export function blankMsg(role: Msg['role']): Msg {
-  return { id: uid(), role, text: '', sources: [], searches: [], supported: null, error: null, tools: [], thoughts: [] }
+  return { id: uid(), role, text: '', error: null, tools: [], thoughts: [] }
 }
 
 /** The text a model sends to update_tasks ('[x] done', '[>] doing', '[ ] to do'), as a list. */
@@ -29,7 +29,7 @@ export function parseTasks(text: unknown): Task[] {
 /** Turns from the session database, as the messages this app draws. */
 export function turnsToMessages(turns: Turn[]): Msg[] {
   return turns.map((turn): Msg => {
-    if (turn.role === 'user') return { ...blankMsg('user'), text: turn.text }
+    if (turn.role === 'user') return { ...blankMsg('user'), text: turn.text, attachments: turn.attachments }
     const msg = blankMsg('bot')
     for (const part of turn.parts) {
       const n = msg.tools.length + msg.thoughts.length

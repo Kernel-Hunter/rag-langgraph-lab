@@ -36,9 +36,7 @@ version:
 
 1. One change per branch and per pull request.
 2. Add or update a test for what you changed.
-3. If the change can affect answer quality in Docs mode (prompt, chunk size, `k`, model),
-   run `vesper eval` before and after and put both scores in the pull request.
-4. Describe what you changed and how you checked it. Screenshots help for UI changes.
+3. Describe what you changed and how you checked it. Screenshots help for UI changes.
 
 ## Reporting bugs
 

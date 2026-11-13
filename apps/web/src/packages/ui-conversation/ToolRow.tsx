@@ -8,7 +8,6 @@ const TOOLS: Record<string, { verb: string; icon: IconName; arg: string }> = {
   read_file: { verb: 'Read', icon: 'doc', arg: 'path' },
   glob: { verb: 'Find', icon: 'search', arg: 'pattern' },
   grep: { verb: 'Search', icon: 'search', arg: 'pattern' },
-  search_docs: { verb: 'Search docs', icon: 'search', arg: 'query' },
   change_directory: { verb: 'Go to', icon: 'folder', arg: 'path' },
   write_file: { verb: 'Write', icon: 'edit', arg: 'path' },
   edit_file: { verb: 'Edit', icon: 'edit', arg: 'path' },
@@ -130,7 +129,8 @@ export function ToolRow({ step, chatId, msgId, expanded = false }: { step: ToolS
   const state = running ? (waiting ? 'wait' : 'run') : step.ok ? 'ok' : 'bad'
   return (
     <div className={`tool ${state}`}>
-      <button type="button" className="tool-head" onClick={() => setOpen(!open)} aria-expanded={open} disabled={running}>
+      {/* While an approval card is up, it carries the title; the row header would repeat it. */}
+      {!waiting && <button type="button" className="tool-head" onClick={() => setOpen(!open)} aria-expanded={open} disabled={running}>
         <span className="tool-dot" aria-hidden="true" />
         <Icon name={info.icon} size={14} />
         <span className="tool-verb">{info.verb}</span>
@@ -138,7 +138,7 @@ export function ToolRow({ step, chatId, msgId, expanded = false }: { step: ToolS
         {!running && <span className="tool-sum">{summary(step)}{step.ms !== undefined && step.ms >= 1000 ? ` · ${took(step.ms)}` : ''}</span>}
         {running && !waiting && <span className="tool-sum shimmer">working</span>}
         {!running && <Icon name="chevron" size={13} className={`tool-chev${open ? ' rot' : ''}`} />}
-      </button>
+      </button>}
       {step.approval && step.approval.answer === undefined && <Approval step={step} chatId={chatId} msgId={msgId} />}
       {/* A running command: its output as it arrives, whatever the view. */}
       {running && step.live && <pre className="tool-out live" aria-live="off">{step.live}</pre>}

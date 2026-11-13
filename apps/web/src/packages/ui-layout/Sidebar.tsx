@@ -1,7 +1,6 @@
 import { useMemo, useState } from 'react'
-import type { SavedSession } from '../connection/api'
 import {
-  deleteChat, deleteSession, folderName, newChat, openSession, openSettings, renameChat, selectChat, useStore, type Chat,
+  currentChat, deleteSession, folderName, newChat, openSession, openSettings, renameSession, selectChat, useStore,
 } from '../store/store'
 import { Icon } from '../ui-primitives/Icon'
 import { Wordmark } from '../ui-primitives/Logo'
@@ -17,37 +16,55 @@ function group(updated: number): string {
   return 'Older'
 }
 
-function ChatRow({ chat, active, busy }: { chat: Chat; active: boolean; busy: boolean }) {
+interface Row {
+  /** Session id once saved; the open chat's id before that. */
+  id: string
+  title: string
+  updated: number
+  cwd: string
+  source: string
+  saved: boolean
+}
+
+function ChatRow({ row, active, busy }: { row: Row; active: boolean; busy: boolean }) {
   const [editing, setEditing] = useState(false)
-  const [title, setTitle] = useState(chat.title)
+  const [title, setTitle] = useState(row.title)
   const [confirm, setConfirm] = useState(false)
+  const done = (): void => { setEditing(false); if (title.trim() && title.trim() !== row.title) void renameSession(row.id, title) }
 
   if (editing) {
     return (
-      <form className="chat-row editing" onSubmit={e => { e.preventDefault(); renameChat(chat.id, title); setEditing(false) }}>
+      <form className="chat-row editing" onSubmit={e => { e.preventDefault(); done() }}>
         <input
-          className="input" value={title} autoFocus maxLength={80} aria-label="Chat title"
+          className="input" value={title} autoFocus maxLength={80} aria-label="Conversation title"
           onChange={e => setTitle(e.target.value)}
-          onBlur={() => { renameChat(chat.id, title); setEditing(false) }}
-          onKeyDown={e => { if (e.key === 'Escape') { e.stopPropagation(); setTitle(chat.title); setEditing(false) } }}
+          onBlur={done}
+          onKeyDown={e => { if (e.key === 'Escape') { e.stopPropagation(); setTitle(row.title); setEditing(false) } }}
         />
       </form>
     )
   }
+  const where = row.cwd ? `${row.source === 'desktop' ? '' : 'terminal · '}${folderName(row.cwd)}` : ''
   return (
     <div className={`chat-row${active ? ' active' : ''}`} onMouseLeave={() => setConfirm(false)}>
-      <button type="button" className="chat-title" onClick={() => selectChat(chat.id)} disabled={busy && !active} title={chat.title}>
-        {chat.title}
+      <button type="button" className="chat-title" disabled={busy && !active} title={`${row.title}${row.cwd ? `\n${row.cwd}` : ''}`}
+        onClick={() => { if (row.saved) void openSession(row.id); else selectChat(row.id) }} onDoubleClick={() => { setTitle(row.title); setEditing(true) }}>
+        <span className="saved-title">{row.title || 'Untitled'}</span>
+        {where && <span className="saved-where">{row.source !== 'desktop' && <Icon name="terminal" size={11} />}{where}</span>}
       </button>
       <div className="chat-tools">
         {confirm ? (
-          <button type="button" className="icon-btn sm danger-on" onClick={() => deleteChat(chat.id)} aria-label="Confirm delete" title="Click again to delete">
-            <Icon name="check" size={14} />
-          </button>
+          <>
+            <button type="button" className="icon-btn sm danger-on" onClick={() => { setConfirm(false); void deleteSession(row.id) }}
+              aria-label="Confirm delete" title="Delete for good (also from the terminal's history)">
+              <Icon name="trash" size={14} />
+            </button>
+            <button type="button" className="icon-btn sm" onClick={() => setConfirm(false)} aria-label="Keep it"><Icon name="close" size={14} /></button>
+          </>
         ) : (
           <>
-            <button type="button" className="icon-btn sm" onClick={() => { setTitle(chat.title); setEditing(true) }} aria-label="Rename chat"><Icon name="edit" size={14} /></button>
-            <button type="button" className="icon-btn sm" onClick={() => setConfirm(true)} aria-label="Delete chat"><Icon name="trash" size={14} /></button>
+            <button type="button" className="icon-btn sm" onClick={() => { setTitle(row.title); setEditing(true) }} aria-label="Rename"><Icon name="edit" size={14} /></button>
+            <button type="button" className="icon-btn sm" onClick={() => setConfirm(true)} aria-label="Delete"><Icon name="trash" size={14} /></button>
           </>
         )}
       </div>
@@ -55,88 +72,72 @@ function ChatRow({ chat, active, busy }: { chat: Chat; active: boolean; busy: bo
   )
 }
 
-/** A conversation from the session database that is not open here yet (often one from the terminal). */
-function SessionRow({ session, busy }: { session: SavedSession; busy: boolean }) {
-  const [confirm, setConfirm] = useState(false)
-  const where = `${session.source === 'desktop' ? 'app' : 'terminal'} · ${folderName(session.cwd)}`
-  return (
-    <div className="chat-row saved" onMouseLeave={() => setConfirm(false)}>
-      <button type="button" className="chat-title" onClick={() => void openSession(session.id)} disabled={busy}
-        title={`${session.title || 'Untitled'}\n${session.cwd}`}>
-        <span className="saved-title">{session.title || 'Untitled'}</span>
-        <span className="saved-where">{where}</span>
-      </button>
-      <div className="chat-tools">
-        {confirm ? (
-          <button type="button" className="icon-btn sm danger-on" onClick={() => void deleteSession(session.id)} aria-label="Confirm delete" title="Click again to delete">
-            <Icon name="check" size={14} />
-          </button>
-        ) : (
-          <button type="button" className="icon-btn sm" onClick={() => setConfirm(true)} aria-label="Delete conversation"><Icon name="trash" size={14} /></button>
-        )}
-      </div>
-    </div>
-  )
-}
-
 export function Sidebar() {
-  const chats = useStore(s => s.chats)
   const history = useStore(s => s.history)
-  const currentId = useStore(s => s.currentId)
+  const loaded = useStore(s => s.historyLoaded)
+  const open = useStore(currentChat)
+  const chats = useStore(s => s.chats)
   const busy = useStore(s => s.streamingId !== null)
-  const docs = useStore(s => s.server?.docs.length ?? 0)
   const [query, setQuery] = useState('')
+  const [scope, setScope] = useState<'all' | 'here'>('all')
+  const workspace = useStore(s => s.server?.settings.workspace ?? '')
 
   const groups = useMemo(() => {
-    const q = query.trim().toLowerCase()
-    const list = q ? chats.filter(c => c.title.toLowerCase().includes(q) || c.messages.some(m => m.text.toLowerCase().includes(q))) : chats
-    const out = new Map<string, Chat[]>()
-    for (const c of list) {
-      const g = group(c.updated)
-      out.set(g, [...(out.get(g) ?? []), c])
+    // Saved conversations, plus open chats the engine has not saved yet.
+    const rows: Row[] = history.map(h => ({
+      id: h.id, title: h.title, updated: h.updated_at * 1000, cwd: h.cwd, source: h.source, saved: true,
+    }))
+    const listed = new Set(history.map(h => h.id))
+    for (const c of chats) { // open chats the list does not have yet (saved a moment ago, or not saved)
+      if (c.messages.length && !(c.sessionId && listed.has(c.sessionId))) {
+        rows.unshift({ id: c.sessionId ?? c.id, title: c.title, updated: c.updated, cwd: workspace, source: 'desktop', saved: !!c.sessionId })
+      }
     }
-    return [...out.entries()]
-  }, [chats, query])
-  const saved = useMemo(() => {
     const q = query.trim().toLowerCase()
-    return q ? history.filter(h => h.title.toLowerCase().includes(q) || h.cwd.toLowerCase().includes(q)) : history
-  }, [history, query])
+    const text = (r: Row): string => {
+      const chat = chats.find(c => c.sessionId === r.id || c.id === r.id)
+      return `${r.title} ${r.cwd} ${chat ? chat.messages.map(m => m.text).join(' ') : ''}`.toLowerCase()
+    }
+    const list = rows
+      .filter(r => scope === 'all' || r.cwd === workspace)
+      .filter(r => !q || text(r).includes(q))
+    const out = new Map<string, Row[]>()
+    for (const r of list) out.set(group(r.updated), [...(out.get(group(r.updated)) ?? []), r])
+    return [...out.entries()]
+  }, [history, chats, query, scope, workspace])
 
+  const activeId = open?.sessionId ?? open?.id
   return (
     <aside className="sidebar">
       <div className="side-top drag">
         <Wordmark />
       </div>
-      <button type="button" className="new-chat" onClick={newChat} disabled={busy}>
+      <button type="button" className="new-chat" onClick={() => { newChat(); window.dispatchEvent(new Event('vesper:focus-composer')) }} disabled={busy}>
         <Icon name="plus" size={16} /> New chat
         <kbd>{/Mac/.test(navigator.userAgent) ? '⌘N' : 'Ctrl N'}</kbd>
       </button>
       <label className="side-search">
         <Icon name="search" size={14} />
-        <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search chats" aria-label="Search chats" />
+        <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search conversations" aria-label="Search conversations" />
       </label>
-      <nav className="chat-list" aria-label="Chats">
+      {!!workspace && (
+        <div className="segmented mini side-scope" role="group" aria-label="Which conversations">
+          <button type="button" className={scope === 'all' ? 'on' : ''} onClick={() => setScope('all')}>All</button>
+          <button type="button" className={scope === 'here' ? 'on' : ''} onClick={() => setScope('here')} title={workspace}>This folder</button>
+        </div>
+      )}
+      <nav className="chat-list" aria-label="Conversations">
         {groups.map(([label, list]) => (
           <div key={label} className="chat-group">
             <div className="group-label">{label}</div>
-            {list.map(c => <ChatRow key={c.id} chat={c} active={c.id === currentId} busy={busy} />)}
+            {list.map(r => <ChatRow key={r.id} row={r} active={r.id === activeId} busy={busy} />)}
           </div>
         ))}
-        {!!saved.length && (
-          <div className="chat-group">
-            <div className="group-label" title="Conversations saved by the terminal app or an earlier install. Click one to continue it here.">
-              Session history
-            </div>
-            {saved.map(h => <SessionRow key={h.id} session={h} busy={busy} />)}
-          </div>
+        {loaded && !groups.length && (
+          <p className="side-empty">{query || scope === 'here' ? 'No conversations match.' : 'Your conversations from the app and the terminal show up here.'}</p>
         )}
-        {!chats.length && !saved.length && <p className="side-empty">Your chats show up here.</p>}
-        {(!!chats.length || !!history.length) && !groups.length && !saved.length && <p className="side-empty">No chats match.</p>}
       </nav>
       <div className="side-bottom">
-        <button type="button" className="side-link" onClick={() => openSettings('documents')}>
-          <Icon name="doc" size={16} /> Documents <span className="count-pill">{docs}</span>
-        </button>
         <button type="button" className="side-link" onClick={() => openSettings('models')}>
           <Icon name="gear" size={16} /> Settings
         </button>

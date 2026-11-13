@@ -3,13 +3,18 @@ import { api } from '../connection/api'
 import { openSettings, saveSettings, useStore } from '../store/store'
 import { Icon } from '../ui-primitives/Icon'
 
-const modelCache = new Map<string, string[]>()
+// Live model lists, kept for a minute: keys and models can change in the terminal app meanwhile.
+const modelCache = new Map<string, { at: number; models: string[] }>()
+const fresh = (id: string): string[] | null => {
+  const hit = modelCache.get(id)
+  return hit && Date.now() - hit.at < 60_000 ? hit.models : null
+}
 
 export function ModelPicker({ onClose }: { onClose: () => void }) {
   const server = useStore(s => s.server)
   const [active, setActive] = useState(server?.settings.provider ?? '')
   const [query, setQuery] = useState('')
-  const [live, setLive] = useState<string[] | null>(modelCache.get(active) ?? null)
+  const [live, setLive] = useState<string[] | null>(fresh(active))
   const [loading, setLoading] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
   const search = useRef<HTMLInputElement>(null)
@@ -36,20 +41,20 @@ export function ModelPicker({ onClose }: { onClose: () => void }) {
   // Fetch the provider's live model list once per session.
   useEffect(() => {
     if (!provider || locked) { setLive(null); return }
-    const hit = modelCache.get(provider.id)
+    const hit = fresh(provider.id)
     if (hit) { setLive(hit); return }
     let alive = true
     setLive(null)
     setLoading(true)
     api.models(provider.id)
-      .then(models => { modelCache.set(provider.id, models); if (alive) setLive(models) })
+      .then(models => { if (models.length) modelCache.set(provider.id, { at: Date.now(), models }); if (alive) setLive(models) })
       .catch(() => { if (alive) setLive([]) })
       .finally(() => { if (alive) setLoading(false) })
     return () => { alive = false }
-  }, [provider?.id, locked]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [provider?.id, locked, provider?.has_key]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const models = useMemo(() => {
-    const all = [...new Set([...(provider?.suggestions ?? []), ...(live ?? []).filter(m => !/embed/i.test(m))])]
+    const all = [...new Set([...(provider?.suggestions ?? []), ...(live ?? [])])]
     const q = query.trim().toLowerCase()
     return q ? all.filter(m => m.toLowerCase().includes(q)) : all
   }, [provider, live, query])

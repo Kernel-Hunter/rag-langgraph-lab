@@ -1,4 +1,4 @@
-import { memo, useMemo, useState, type MouseEvent } from 'react'
+import { memo, useMemo, useState } from 'react'
 import type { Task } from '../connection/api'
 import type { Msg, Thought } from '../store/store'
 import { retry, runPlan, toast, undoChanges, useStore } from '../store/store'
@@ -6,45 +6,6 @@ import { TOOL_VERBS, ToolRow } from './ToolRow'
 import { Icon } from '../ui-primitives/Icon'
 import { LogoMark } from '../ui-primitives/Logo'
 import { renderMarkdown } from './markdown'
-
-function SourceCards({ msg, open, onToggle, highlight }: { msg: Msg; open: boolean; onToggle: () => void; highlight: string | null }) {
-  const unique = useMemo(() => {
-    const seen = new Set<string>()
-    return msg.sources.filter(s => {
-      const key = `${s.source ?? ''}|${s.page ?? ''}|${s.text.slice(0, 60)}`
-      if (seen.has(key)) return false
-      seen.add(key)
-      return true
-    })
-  }, [msg.sources])
-  if (!unique.length) return null
-  return (
-    <div className="sources">
-      <button type="button" className="sources-toggle" onClick={onToggle} aria-expanded={open}>
-        <Icon name="doc" size={14} />
-        {unique.length} source{unique.length === 1 ? '' : 's'}
-        <Icon name="chevron" size={14} className={open ? 'rot' : ''} />
-      </button>
-      {open && (
-        <div className="source-list">
-          {unique.map((s, i) => {
-            // Same numbering the model sees in its context, so [page N] chips match these cards.
-            const page = s.page === null || s.page === undefined ? null : String(s.page)
-            return (
-              <div key={i} className={`source-card${highlight !== null && page === highlight ? ' hl' : ''}`}>
-                <div className="source-head">
-                  <span className="source-name">{s.source ?? 'document'}</span>
-                  {page && <span className="source-page">p.{page}</span>}
-                </div>
-                <p>{s.text.length > 420 ? `${s.text.slice(0, 420)}…` : s.text}</p>
-              </div>
-            )
-          })}
-        </div>
-      )}
-    </div>
-  )
-}
 
 const count = (n: number): string => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n))
 const seconds = (s: number): string => (s < 60 ? `${s < 10 ? s.toFixed(1) : Math.round(s)}s` : `${Math.floor(s / 60)}m ${Math.round(s % 60)}s`)
@@ -85,14 +46,24 @@ function UserMessage({ msg }: { msg: Msg }) {
   return (
     <div className="msg user">
       <span className="prompt" aria-hidden="true">guest@vesper:~$</span>
-      <div className="bubble">{msg.text}</div>
+      <div className="user-col">
+        {!!msg.attachments?.length && (
+          <div className="sent-attachments">
+            {msg.attachments.map(name => (
+              <span key={name} className="att-chip sent" title={name}>
+                <Icon name={/\.(png|jpe?g|gif|webp)$/i.test(name) ? 'image' : /\.[a-z0-9]{1,6}$/i.test(name) ? 'doc' : 'folder'} size={13} />
+                <span>{name}</span>
+              </span>
+            ))}
+          </div>
+        )}
+        {msg.text && <div className="bubble">{msg.text}</div>}
+      </div>
     </div>
   )
 }
 
 function BotMessage({ msg, chatId, last }: { msg: Msg; chatId: string; last: boolean }) {
-  const [open, setOpen] = useState(false)
-  const [hl, setHl] = useState<string | null>(null)
   const transcript = useStore(s => s.transcript)
   const planning = useStore(s => s.server?.settings.agent_mode === 'plan')
   const busy = useStore(s => s.streamingId !== null)
@@ -121,13 +92,6 @@ function BotMessage({ msg, chatId, last }: { msg: Msg; chatId: string; last: boo
   const lastKind = parts[parts.length - 1]?.kind
   const thinking = msg.streaming && !msg.error && !running && (parts.length === 0 || lastKind === 'tool' || !!msg.draft)
 
-  const onClick = (e: MouseEvent<HTMLDivElement>): void => {
-    const el = (e.target as HTMLElement).closest<HTMLElement>('.cite')
-    if (!el) return
-    setOpen(true)
-    setHl(el.dataset.page ?? null)
-  }
-
   const copy = (): void => {
     void navigator.clipboard.writeText(msg.text).then(() => toast('Copied'), () => toast('Copy failed', 'error'))
   }
@@ -136,11 +100,6 @@ function BotMessage({ msg, chatId, last }: { msg: Msg; chatId: string; last: boo
     <div className="msg bot">
       <div className="avatar" aria-hidden="true"><LogoMark size={22} /></div>
       <div className="body">
-        {!!msg.searches.length && !thinking && (
-          <div className="searches">
-            {msg.searches.map((q, i) => <span key={i} className="search-chip"><Icon name="search" size={12} />{q}</span>)}
-          </div>
-        )}
         {parts.map((p, i) => (p.kind === 'tool'
           ? <ToolRow key={p.key} step={msg.tools[p.index]!} chatId={chatId} msgId={msg.id} expanded={transcript} />
           : p.kind === 'thought'
@@ -154,7 +113,6 @@ function BotMessage({ msg, chatId, last }: { msg: Msg; chatId: string; last: boo
             <div
               key={p.key}
               className={`md${msg.streaming && i === lastText && i === parts.length - 1 ? ' cursor' : ''}`}
-              onClick={onClick}
               dangerouslySetInnerHTML={{ __html: p.html }}
             />
           )))}
@@ -163,9 +121,7 @@ function BotMessage({ msg, chatId, last }: { msg: Msg; chatId: string; last: boo
           <div className="thinking">
             <span className="shimmer">
               {msg.draft ? `Preparing ${TOOL_VERBS[msg.draft.name] ?? msg.draft.name} (${count(msg.draft.chars)} characters)`
-                : msg.tools.length ? 'Thinking'
-                : msg.searches.length ? `Searching “${msg.searches[msg.searches.length - 1]}”`
-                  : msg.sources.length ? 'Reading the pages' : 'Working on it'}
+                : msg.tools.length ? 'Thinking' : 'Working on it'}
             </span>
           </div>
         )}
@@ -175,13 +131,6 @@ function BotMessage({ msg, chatId, last }: { msg: Msg; chatId: string; last: boo
             <span>{msg.error}</span>
           </div>
         )}
-        {!msg.streaming && msg.supported !== null && (
-          <div className={`verdict ${msg.supported ? 'ok' : 'bad'}`}>
-            <Icon name={msg.supported ? 'check' : 'warn'} size={13} />
-            {msg.supported ? 'Supported by the sources' : 'Not fully supported by the sources'}
-          </div>
-        )}
-        <SourceCards msg={msg} open={open} onToggle={() => { setOpen(o => !o); setHl(null) }} highlight={hl} />
         {!msg.streaming && msg.usage && (
           <div className="usage">
             {seconds(msg.usage.seconds)}
@@ -199,7 +148,7 @@ function BotMessage({ msg, chatId, last }: { msg: Msg; chatId: string; last: boo
         {!msg.streaming && (
           <div className={`actions${last ? ' show' : ''}`}>
             {msg.text && <button type="button" className="icon-btn sm" onClick={copy} title="Copy" aria-label="Copy answer"><Icon name="copy" size={15} /></button>}
-            <button type="button" className="icon-btn sm" onClick={() => void retry(chatId, msg.id)} title="Retry" aria-label="Retry"><Icon name="retry" size={15} /></button>
+            {last && !busy && <button type="button" className="icon-btn sm" onClick={() => void retry(chatId, msg.id)} title="Ask again" aria-label="Ask again"><Icon name="retry" size={15} /></button>}
             {last && edited && !busy && (
               <button type="button" className="icon-btn sm" onClick={() => void undoChanges()} title="Undo the file changes of this answer" aria-label="Undo file changes"><Icon name="undo" size={15} /></button>
             )}

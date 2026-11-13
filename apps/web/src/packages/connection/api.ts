@@ -8,20 +8,12 @@ export interface Provider {
   needs_key: boolean
   has_key: boolean
   chat_model: string
-  embeddings: boolean
   suggestions: string[]
 }
 
 export interface Settings {
   provider: string
   model: string
-  embeddings: string
-  embed_model: string
-  chunk_size: number
-  chunk_overlap: number
-  k: number
-  mode: 'folder' | 'graph' | 'agent'
-  check: boolean
   workspace: string
   agent_mode: AgentMode
   thinking: Thinking
@@ -48,25 +40,20 @@ export interface ApprovalRequest {
 
 export type ApprovalAnswer = 'yes' | 'always' | 'no'
 
-export interface ChatTurn {
-  role: 'user' | 'bot'
-  text: string
-}
-
-export interface IndexState {
-  status: 'idle' | 'loading' | 'embedding' | 'ready' | 'empty' | 'error'
-  chunks: number
-  pages: number
-  error: string | null
-  warnings?: { source: string; message: string }[]
-}
-
 export interface ServerState {
   providers: Provider[]
   custom_base_url: string
   settings: Settings
-  index: IndexState
-  docs: { name: string; size: number }[]
+  version: string
+  /** The user's home folder: where the agent starts when no folder is open. */
+  home: string
+}
+
+/** An image pasted or dropped into the composer, sent with the next message. */
+export interface ImageUpload {
+  name: string
+  mime: string
+  data: string
 }
 
 /** A conversation saved in the session database (terminal and desktop write to the same one). */
@@ -87,7 +74,7 @@ export type TurnPart =
   | { type: 'text'; text: string }
   | { type: 'tool'; id: string; name: string; args: Record<string, unknown>; output: string | null; ok: boolean | null }
 
-export type Turn = { role: 'user'; text: string } | { role: 'assistant'; parts: TurnPart[] }
+export type Turn = { role: 'user'; text: string; attachments?: string[] } | { role: 'assistant'; parts: TurnPart[] }
 
 /** One line of the agent's task list. */
 export interface Task {
@@ -112,18 +99,10 @@ export interface Usage {
   estimated?: boolean
 }
 
-export interface Source {
-  page: number | string | null
-  source: string | null
-  text: string
-}
-
 export type StreamEvent =
-  | { event: 'sources'; data: { items: Source[] } }
-  | { event: 'search'; data: { query: string } }
   | { event: 'token'; data: { text: string } }
-  | { event: 'check'; data: { supported: boolean } }
   | { event: 'error'; data: { message: string } }
+  | { event: 'attached'; data: { names: string[]; problems: string[] } }
   | { event: 'session'; data: { id: string; cwd: string } }
   | { event: 'reasoning'; data: { text: string } }
   | { event: 'tool_draft'; data: { name: string; chars: number } }
@@ -186,11 +165,6 @@ export const api = {
     (await request('/api/settings', { method: 'POST', json: values })).json(),
   models: async (provider: string): Promise<string[]> =>
     ((await (await request(`/api/models?provider=${encodeURIComponent(provider)}`)).json()) as { models: string[] }).models,
-  upload: async (file: File): Promise<ServerState> =>
-    (await request(`/api/docs?name=${encodeURIComponent(file.name)}`, { method: 'POST', body: await file.arrayBuffer() })).json(),
-  removeDoc: async (name: string): Promise<ServerState> =>
-    (await request(`/api/docs/${encodeURIComponent(name)}`, { method: 'DELETE' })).json(),
-  reindex: async (): Promise<ServerState> => (await request('/api/reindex', { method: 'POST' })).json(),
   approve: async (id: string, answer: ApprovalAnswer): Promise<void> => {
     await request('/api/approve', { method: 'POST', json: { id, answer } })
   },
@@ -204,6 +178,13 @@ export const api = {
   deleteSession: async (id: string): Promise<void> => {
     await request(`/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' })
   },
+  renameSession: async (id: string, title: string): Promise<void> => {
+    await request(`/api/sessions/${encodeURIComponent(id)}/rename`, { method: 'POST', json: { title } })
+  },
+  /** Stops a running answer in the engine (ends its command, refuses further tools). */
+  stopChat: async (chatId: string): Promise<void> => {
+    await request(`/api/chats/${encodeURIComponent(chatId)}/stop`, { method: 'POST' })
+  },
   /** Puts back the files the agent's latest edits changed. */
   undo: async (chatId: string, sessionId?: string): Promise<string[]> =>
     ((await (await request(`/api/chats/${encodeURIComponent(chatId)}/undo`, { method: 'POST', json: { session_id: sessionId } })).json()) as { paths: string[] }).paths,
@@ -216,7 +197,10 @@ export const api = {
 
   /** Streams one answer. Calls onEvent for each event; resolves when the stream ends. */
   async chat(
-    body: { question: string; chat_id: string; history: ChatTurn[]; session_id?: string },
+    body: {
+      question: string; chat_id: string; session_id?: string
+      attachments?: string[]; images?: ImageUpload[]; retry?: boolean
+    },
     onEvent: (e: StreamEvent) => void,
     signal: AbortSignal,
   ): Promise<void> {

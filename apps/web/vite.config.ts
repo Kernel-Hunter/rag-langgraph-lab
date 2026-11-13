@@ -5,7 +5,7 @@ import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vitest/config'
 
 // The Python engine serves the built app: index at "/", assets under "/static/".
-// Dev: run the engine with `rag-lab-app --serve` (VESPER_PORT=8765 VESPER_TOKEN=devtoken)
+// Dev: run the engine with `vesper-app --serve` (VESPER_PORT=8765 VESPER_TOKEN=devtoken)
 // and `npm run dev`, then open http://localhost:5173/#token=devtoken
 const engine = process.env.VESPER_ENGINE ?? 'http://127.0.0.1:8765'
 

@@ -85,7 +85,7 @@ hidden and stored only on your computer). Then describe what you want:
 ```text
 ❯ explain how this project is organized
 ❯ the login test fails, find out why and fix it
-❯ summarize every PDF in ./papers and cite the pages
+❯ summarize the PDFs in ./papers
 ❯ add a --verbose flag to cli.py and update the README
 ❯ go to ~/projects/api and run its tests
 ```
@@ -106,7 +106,7 @@ command line and all tool output, where the normal view prints one summary line 
 
 | In a session | |
 |---|---|
-| `@path` | attach a file to your message (Tab completes paths) |
+| `@path` | attach a file, folder or image to your message (Tab completes paths; quote paths with spaces: `@"my notes.pdf"`) |
 | `!command` | run a shell command yourself; `!cd folder` moves Vesper too |
 | `/cd folder` | go to another folder or project |
 | `/new` | start a new conversation (the old one is saved) |
@@ -122,7 +122,6 @@ command line and all tool output, where the normal view prints one summary line 
 | `/think` | how hard reasoning models think: `off`, `low`, `medium`, `high` |
 | `/model`, `/key` | switch provider and model, set the API key |
 | `/mode` or `Shift+Tab` | cycle `ask`, `auto-edit`, `yolo`, `plan` |
-| `/docs` | re-read the documents in the folder |
 | `/app` | open the desktop app |
 | `/help`, `/exit` | help, quit (`Ctrl+D` works too) |
 | `Ctrl+C` | stop the answer and any command it started |
@@ -194,15 +193,19 @@ vesper -c                 # continue the last conversation in this folder
 vesper -r                 # pick a conversation from a list
 vesper -r 3f9a2c          # resume one by id (the first characters are enough)
 vesper sessions           # list saved conversations, newest first
+vesper sessions rm 2      # delete one (a number from the list or an id)
+vesper sessions rename 2 "auth refactor"
 vesper logs               # what the agent did in the latest conversation
 vesper logs 3f9a2c --full # the same, with tool arguments and output
 vesper logs --json        # one JSON object per event, for scripts
 ```
 
 The database is an ordinary SQLite file with four tables (`sessions`, `messages`,
-`events`, and `checkpoints` for undo), so `sqlite3 ~/.vesper/vesper.db` works on it too. The desktop app's Folder mode
-reads and writes the same file, so a conversation started in the terminal can be continued
-in the app and the other way round.
+`events`, and `checkpoints` for undo), so `sqlite3 ~/.vesper/vesper.db` works on it too.
+The desktop app reads and writes the same file: a conversation started in the terminal can
+be continued in the app and the other way round, and one deleted or renamed in either app
+is gone or renamed in the other. Inside a session, `/sessions rm N` and
+`/sessions rename N title` do the same.
 
 A project can tell Vesper how to work in it. If the working directory has a `VESPER.md`,
 `AGENTS.md`, `CLAUDE.md` or `.cursorrules` file, the first one found is added to the
@@ -210,29 +213,28 @@ system prompt.
 
 ## Desktop app
 
-<img src="docs/desktop.jpg" alt="The Vesper desktop app showing a file edit with its diff" width="720">
+<img src="docs/desktop.jpg" alt="The Vesper desktop app asking before it writes a file, with the diff and a task list" width="800">
 
-The desktop app does the same work with a window around it. Open a folder from the
-top bar, and every tool call shows up inline: what the agent read, what it searched, and
+The desktop app does the same work with a window around it. It starts in your home folder;
+pick a project with the folder button in the top bar. The `+` button next to the message box
+attaches files, folders and images for one message without changing the working folder, and
+you can also drop them on the window or paste a screenshot. Every tool call shows up inline: what the agent read, what it searched, and
 a colored diff with Allow, Always allow and Deny before any change. When the agent moves
 to another folder, the top bar follows it.
 
 The Plan button next to the model picker turns plan mode on: the answer is a plan with a
 "Run this plan" button under it. The task list is drawn as a checklist inside the answer,
 and an answer that changed files gets an undo button. `/undo`, `/compact` and `/plan` also
-work when typed into the message box. Settings, Folder lists the saved "always allow" rules
+work when typed into the message box. Settings, Agent lists the saved "always allow" rules
 and has the thinking level.
 
-The sidebar lists your chats and, under "Session history", the conversations saved by the
-terminal app. Click one to open it with every step it took, and your next message continues
-it in its folder. The Transcript button in the top bar (`Cmd+O` or `Ctrl+O`) opens every
+The sidebar lists every saved conversation, from the app and from the terminal, newest
+first ("This folder" narrows it to the current project). Click one to open it with every
+step it took; your next message continues it in its folder. Double-click a title to rename
+it, and use the trash button to delete it. Type `/` in the message box for commands such as
+`/rename`, `/delete`, `/model`, `/undo` and `/compact`. The Transcript button in the top bar (`Cmd+O` or `Ctrl+O`) opens every
 step: the model's thinking, each command line, each diff and the full output. A running
 command streams its output into the chat in either view.
-
-It also has a Docs mode for a fixed set of documents: drop in PDFs, Markdown or text files
-and get streamed answers with clickable page citations. Docs mode is where Vesper started,
-as the Chapter 5B lab of a prompt engineering course, and its retrieval code still follows
-the course slides (load, split, embed, store, retrieve, generate).
 
 Themes: system, dark, light, and a terminal theme with five phosphor colors and optional
 background effects that pause when the window is hidden.
@@ -262,8 +264,9 @@ With Ollama, Vesper asks for a 16,384-token context window, because Ollama's def
 4,096 is too small for an agent. Set `VESPER_OLLAMA_CTX` to change it (more context needs
 more memory).
 
-Document search uses embeddings that run on your computer, so indexing PDFs needs no key
-and sends nothing anywhere.
+The terminal app and the desktop app share one key file (`~/.vesper/.env`) and one settings
+file (`~/.vesper/config.json`). A key you enter in one is picked up by the other without a
+restart, and so is the model you pick.
 
 ## Safety
 
@@ -310,8 +313,8 @@ Found a security problem? Please report it privately, see [SECURITY.md](SECURITY
           └──────────────── coder.Session ─────────────────────────────┘
                                  │  LangGraph create_agent loop
                                  ▼
-               workspace.Workspace: list_files, read_file, glob, grep, search_docs,
-               change_directory, write_file, edit_file, run_command
+               workspace.Workspace: list_files, read_file, glob, grep, web_fetch,
+               web_search, change_directory, write_file, edit_file, run_command
                                  │
                                  ▼
                store.Store: ~/.vesper/vesper.db (sessions, messages, events)
@@ -325,8 +328,8 @@ Found a security problem? Please report it privately, see [SECURITY.md](SECURITY
 | `src/vesper/store.py` | Saved sessions and the activity log (SQLite) |
 | `src/vesper/tui.py`, `ui.py`, `onboarding.py` | The `vesper` terminal app: session loop, rendering, first-run setup |
 | `src/vesper/server.py` | The desktop engine API |
-| `src/vesper/providers.py` | Every model provider and the local embeddings |
-| `src/vesper/indexing.py`, `graph.py`, `agent.py` | Docs mode: a retrieval pipeline in LangChain and LangGraph |
+| `src/vesper/providers.py` | Every model provider; re-reads the shared key file when it changes |
+| `src/vesper/attachments.py` | Files, folders and images attached to a message |
 | `apps/web/` | React interface (Vite + TypeScript) |
 | `apps/desktop/` | Electron shell and packaging |
 
@@ -354,12 +357,7 @@ VESPER_PORT=8765 VESPER_TOKEN=devtoken vesper-app --serve
 npm --prefix apps/web run dev               # open http://localhost:5173/#token=devtoken
 ```
 
-Document question answering also works from the command line: `vesper ask`, `vesper agent`,
-`vesper chat` and `vesper eval` (also available as `rag-lab`). They use the provider and
-model you picked in Vesper unless you pass `--llm`. `vesper eval` scores
-`eval/questions.yaml`, so you can compare chunk sizes, `k` and models with numbers.
-
-Releases: push a tag such as `v0.7.1` and GitHub Actions builds, smoke-tests and publishes
+Releases: push a tag such as `v0.8.0` and GitHub Actions builds, smoke-tests and publishes
 macOS, Linux and Windows builds with checksums.
 
 ## Contributing

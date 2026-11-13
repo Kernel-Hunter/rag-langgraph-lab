@@ -27,7 +27,6 @@ jobs:
         run: |
           vesper --version
           vesper --help
-          rag-lab --help
       - name: Print mode answers offline with the fake model
         shell: bash
         env:
