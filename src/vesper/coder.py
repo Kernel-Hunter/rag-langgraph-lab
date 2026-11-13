@@ -431,7 +431,17 @@ class Session:
             if cut:
                 session.workspace._seen.clear()  # trimmed results may need to be read again
                 request = request.override(messages=messages)
-            response = handler(request)
+            for _heal in range(4):
+                if request.model is not session._llm:  # a setting was dropped earlier in this turn
+                    request = request.override(model=session._llm)
+                try:
+                    response = handler(request)
+                    break
+                except Exception as exc:  # noqa: BLE001 - re-raised unless a refused setting explains it
+                    fixed = prov.adapt(session._llm, exc)
+                    if fixed is None or _heal == 3:
+                        raise
+                    session._llm, session._agent = fixed, None
             for _attempt in range(2):
                 msg = response if isinstance(response, AIMessage) else next(
                     (m for m in reversed(getattr(response, "result", [])) if isinstance(m, AIMessage)), None)

@@ -359,7 +359,7 @@ Document question answering also works from the command line: `vesper ask`, `ves
 model you picked in Vesper unless you pass `--llm`. `vesper eval` scores
 `eval/questions.yaml`, so you can compare chunk sizes, `k` and models with numbers.
 
-Releases: push a tag such as `v0.7.0` and GitHub Actions builds, smoke-tests and publishes
+Releases: push a tag such as `v0.7.1` and GitHub Actions builds, smoke-tests and publishes
 macOS, Linux and Windows builds with checksums.
 
 ## Contributing

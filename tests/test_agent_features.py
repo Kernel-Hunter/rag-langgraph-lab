@@ -431,11 +431,89 @@ def test_thinking_settings_reach_each_provider(monkeypatch):
     payload = claude._get_request_payload([("human", "hi")])
     assert payload["thinking"] == {"type": "adaptive", "display": "summarized"} and payload["output_config"] == {"effort": "high"}
     assert prov.get_llm("anthropic", "claude-haiku-4-5", thinking="low").thinking == {"type": "enabled", "budget_tokens": 4096}
-    assert prov.get_llm("openai", "o4-mini", thinking="low").reasoning_effort == "low"
-    assert prov.get_llm("openai", "gpt-4.1-mini").reasoning_effort is None
+    openai = prov.get_llm("openai", "o4-mini", thinking="low")
+    assert openai.use_responses_api and openai.reasoning == {"effort": "low", "summary": "auto"}
+    plain_openai = prov.get_llm("openai", "gpt-4.1-mini")                   # newer OpenAI models refuse a temperature
+    assert plain_openai.use_responses_api and plain_openai.reasoning is None and plain_openai.temperature is None
+    monkeypatch.setenv("GROQ_API_KEY", "k")
+    groq = prov.get_llm("groq", "openai/gpt-oss-20b", thinking="low")       # other providers keep the chat endpoint
+    assert not groq.use_responses_api and groq.reasoning_effort == "low"
     assert prov.get_llm("ollama", "qwen3", thinking="medium").reasoning is True
     assert [type(m).__name__ for m in prov.agent_middleware(claude)] == ["AnthropicPromptCachingMiddleware"]
     assert prov.agent_middleware(prov.get_llm("openai", "gpt-4.1-mini")) == []
+
+
+def test_a_refused_setting_is_dropped(monkeypatch):
+    from vesper import providers as prov
+
+    monkeypatch.setenv("GROQ_API_KEY", "k")
+    monkeypatch.setenv("MISTRAL_API_KEY", "k")
+    llm = prov.get_llm("groq", "some-model", thinking="high")
+    fixed = prov.adapt(llm, Exception("Function tools with reasoning_effort are not supported for some-model"))
+    assert fixed.reasoning_effort is None and "reasoning_effort" not in fixed._get_request_payload([("human", "hi")])
+    assert llm.reasoning_effort == "high"                                   # the original is left alone
+    warm = prov.get_llm("mistral", "some-model")
+    assert warm.temperature == 0
+    cool = prov.adapt(warm, Exception("Unsupported value: 'temperature' does not support 0 with this model."))
+    assert cool.temperature is None and "temperature" not in cool._get_request_payload([("human", "hi")])
+    assert prov.adapt(cool, Exception("temperature is not supported")) is None      # nothing left to drop
+    assert prov.adapt(warm, Exception("Incorrect API key provided")) is None
+    assert prov.adapt(warm, Exception("Rate limit reached, the temperature of the servers is high")) is None
+
+
+def test_a_refused_setting_heals_the_turn(proj, monkeypatch):
+
+    good = fake(AIMessage("ok"))
+    session = Session(good, Workspace(proj))
+    dropped = []
+
+    class Picky:
+        temperature = 0
+
+        def model_copy(self, update):
+            dropped.append(update)
+            return good
+
+    picky = Picky()
+    session._llm = picky
+
+    class Request:
+        def __init__(self, model):
+            self.model, self.messages, self.tools = model, [HumanMessage("hi")], []
+
+        def override(self, **kw):
+            return Request(kw.get("model", self.model))
+
+    def handler(request):
+        if request.model is picky:
+            raise RuntimeError("Unsupported parameter: 'temperature' is not supported with this model.")
+        return AIMessage(content="ok")
+
+    guard = session._middleware()[0]
+    reply = guard.wrap_model_call(Request(picky), handler)
+    assert reply.content == "ok" and dropped == [{"temperature": None}]
+    assert session._llm is good and session._agent is None                  # later turns start without the setting
+
+    def broken(request):
+        raise RuntimeError("Incorrect API key provided")
+
+    with pytest.raises(RuntimeError, match="API key"):
+        guard.wrap_model_call(Request(good), broken)
+
+
+def test_the_model_list_leaves_out_models_that_cannot_chat(monkeypatch):
+    import io
+
+    from vesper import providers as prov
+
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    ids = ["gpt-5-mini", "text-embedding-3-small", "tts-1", "whisper-1", "gpt-image-1", "gpt-realtime", "omni-moderation-latest",
+           "gpt-4o-transcribe", "dall-e-3", "sora-2", "gpt-4.1"]
+    served = lambda *a, **k: io.BytesIO(json.dumps({"data": [{"id": i} for i in ids]}).encode())  # noqa: E731
+    monkeypatch.setattr(prov.urllib.request, "urlopen", served)
+    assert prov.list_models("openai") == ["gpt-4.1", "gpt-5-mini"]
+    ids[:] = ["text-embedding-3-small"]                                     # a list of nothing else is shown as it is
+    assert prov.list_models("openai") == ["text-embedding-3-small"]
 
 
 def test_the_fixed_part_of_the_prompt_comes_first(proj, tmp_path):

@@ -237,6 +237,11 @@ def get_llm(provider: str | None = None, model: str | None = None, temperature: 
                           reasoning=True if thinking != "off" else None)
     from langchain_openai import ChatOpenAI
 
+    if p.id == "openai":
+        # The Responses API, with no temperature: OpenAI's newer models refuse tools on the
+        # older chat endpoint and refuse a temperature, and every chat model accepts this.
+        extra = {"reasoning": {"effort": thinking, "summary": "auto"}} if thinking != "off" else {}
+        return ChatOpenAI(model=model, api_key=_key(p), use_responses_api=True, **extra)
     if thinking != "off":  # reasoning models take an effort level and no temperature
         return ChatOpenAI(model=model, base_url=_base_url(p), api_key=_key(p) or "not-needed",
                           reasoning_effort=thinking)
@@ -246,6 +251,41 @@ def get_llm(provider: str | None = None, model: str | None = None, temperature: 
         base_url=_base_url(p),
         api_key=_key(p) or "not-needed",  # local servers ignore it
     )
+
+
+REFUSED = ("unsupported", "not supported", "does not support", "doesn't support", "not allowed", "only the default",
+           "invalid", "unknown parameter", "unrecognized", "extra inputs")
+# Optional settings a provider may refuse, by the word its error message uses for them.
+OPTIONAL_SETTINGS = {
+    "temperature": ("temperature",),
+    "reasoning": ("reasoning_effort", "reasoning"),
+    "thinking": ("thinking", "output_config", "reasoning"),
+    "think": ("reasoning",),
+}
+
+
+def adapt(llm, exc: BaseException):
+    """A copy of `llm` without the optional setting the provider just refused, or None.
+
+    Providers disagree about which models take a temperature or a thinking level, and the
+    list changes with every model release. So the request is the test: when a model answers
+    "temperature is not supported", the next try goes without one.
+    """
+    text = str(exc).lower()
+    if not any(word in text for word in REFUSED):
+        return None
+    update = {}
+    for word, fields in OPTIONAL_SETTINGS.items():
+        if word in text:
+            update.update({f: None for f in fields if getattr(llm, f, None) is not None})
+    if not update or not hasattr(llm, "model_copy"):
+        return None
+    return llm.model_copy(update=update)
+
+
+# Model ids that are not chat models, so they are left out of the model picker.
+NOT_CHAT = ("embedding", "embed-", "tts", "whisper", "image", "audio", "realtime", "moderation", "transcribe",
+            "dall-e", "sora", "rerank", "guard")
 
 
 def agent_middleware(llm) -> list:
@@ -327,6 +367,7 @@ def list_models(provider: str, timeout: float = 6.0) -> list[str]:
     except Exception:
         return fallback
     ids = sorted({m.get("id", "").removeprefix("models/") for m in data.get("data", data.get("models", []))} - {""})
+    ids = [m for m in ids if not any(word in m.lower() for word in NOT_CHAT)] or ids
     return ids or fallback
 
 
