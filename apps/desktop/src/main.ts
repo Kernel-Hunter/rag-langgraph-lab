@@ -176,8 +176,14 @@ ipcMain.handle('vesper:pick-files', async (event) => {
 
 function lockDownSession(): void {
   const ses = session.defaultSession
-  ses.setPermissionRequestHandler((_wc, permission, callback) => callback(ALLOWED_PERMISSIONS.has(permission)))
-  ses.setPermissionCheckHandler((_wc, permission) => ALLOWED_PERMISSIONS.has(permission))
+  ses.setPermissionRequestHandler((wc, permission, callback, details) => {
+    const audio = permission === 'media' && sameOrigin(details.requestingUrl) && sameOrigin(wc.getURL()) &&
+      'mediaTypes' in details && details.mediaTypes?.length === 1 && details.mediaTypes[0] === 'audio'
+    callback(ALLOWED_PERMISSIONS.has(permission) || audio)
+  })
+  ses.setPermissionCheckHandler((wc, permission, origin, details) =>
+    ALLOWED_PERMISSIONS.has(permission) ||
+    (permission === 'media' && sameOrigin(origin) && !!wc && sameOrigin(wc.getURL()) && details.mediaType === 'audio'))
 }
 
 function installMenu(): void {

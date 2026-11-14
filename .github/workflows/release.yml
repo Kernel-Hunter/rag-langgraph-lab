@@ -38,7 +38,7 @@ jobs:
           npm --prefix apps/web ci
           npm --prefix apps/web run build
 
-      - run: pip install -e . pyinstaller pillow
+      - run: pip install -e ".[dictation]" pyinstaller pillow
       - name: Build the engine
         run: python packaging/build_engine.py
 
