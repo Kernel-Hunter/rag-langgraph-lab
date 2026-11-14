@@ -46,6 +46,7 @@ export default {
   mac: {
     icon,
     category: 'public.app-category.productivity',
+    extendInfo: { NSMicrophoneUsageDescription: 'Vesper uses your microphone when you choose to dictate a message.' },
     target: only('arm64', 'dmg', 'zip'),
     // No Developer ID: an ad-hoc signature is enough for Apple Silicon to run it.
     identity: '-',

@@ -5,6 +5,7 @@ import {
 } from '../store/store'
 import { Icon, type IconName } from '../ui-primitives/Icon'
 import { ModelPicker } from '../ui-model-selection/ModelPicker'
+import { useDictation } from './useDictation'
 
 const MAX_LEN = 100_000
 const MODE_LABEL = { ask: 'Ask first', 'auto-edit': 'Auto-edit', yolo: 'Full access', plan: 'Read only' } as const
@@ -50,6 +51,10 @@ export function Composer() {
   const attachments = useStore(s => s.attachments)
   const chatId = useStore(s => currentChat(s)?.id ?? null)
   const theme = useStore(s => s.appearance.theme)
+  const dictation = useDictation(chatId, spoken => {
+    setText(previous => previous + (previous && !/\s$/.test(previous) ? ' ' : '') + spoken)
+    ref.current?.focus()
+  })
 
   const provider = providers?.find(p => p.id === settings?.provider)
   const model = settings?.model || provider?.chat_model || ''
@@ -78,7 +83,7 @@ export function Composer() {
 
   const submit = (): void => {
     const q = text.trim()
-    if ((!q && !attachments.length) || streaming || q.length > MAX_LEN) return
+    if ((!q && !attachments.length) || streaming || q.length > MAX_LEN || dictation.phase !== 'idle') return
     if (q.startsWith('/') && runCommand(q)) { setText(''); return }
     setText('')
     void send(q)
@@ -173,13 +178,22 @@ export function Composer() {
             </button>
           </div>
           <div className="composer-right">
+            {dictation.phase !== 'idle' && <span className="dictation-status" role="status">
+              {dictation.phase === 'recording' ? 'Recording · click mic to finish' : dictation.phase === 'requesting' ? 'Opening microphone…' : 'Transcribing locally…'}
+            </span>}
+            <button type="button" className={`mic-btn${dictation.phase === 'recording' ? ' recording' : ''}`}
+              onClick={() => void dictation.toggle()} disabled={streaming || (dictation.phase !== 'idle' && dictation.phase !== 'recording')}
+              aria-label={dictation.phase === 'recording' ? 'Finish dictation' : 'Dictate a message'}
+              aria-pressed={dictation.phase === 'recording'} title={dictation.phase === 'recording' ? 'Finish dictation' : 'Dictate a message locally'}>
+              <Icon name="mic" size={17} />
+            </button>
             {tooLong && <span className="count err">{text.length}/{MAX_LEN}</span>}
             {streaming ? (
               <button type="button" className="send stop" onClick={stop} aria-label="Stop" title="Stop (Esc)">
                 <span className="stop-square" />
               </button>
             ) : (
-              <button type="submit" className="send" disabled={(!text.trim() && !attachments.length) || tooLong} aria-label="Send">
+              <button type="submit" className="send" disabled={(!text.trim() && !attachments.length) || tooLong || dictation.phase !== 'idle'} aria-label="Send">
                 <Icon name="up" size={17} />
               </button>
             )}

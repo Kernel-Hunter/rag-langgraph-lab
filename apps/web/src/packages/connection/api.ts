@@ -160,6 +160,8 @@ async function request(path: string, init: RequestInit & { json?: unknown } = {}
 }
 
 export const api = {
+  transcribe: async (audio: Blob): Promise<string> =>
+    ((await (await request('/api/dictation', { method: 'POST', body: audio, headers: { 'Content-Type': 'application/octet-stream' } })).json()) as { text: string }).text,
   state: async (): Promise<ServerState> => (await request('/api/state')).json(),
   settings: async (values: Record<string, unknown>): Promise<ServerState> =>
     (await request('/api/settings', { method: 'POST', json: values })).json(),

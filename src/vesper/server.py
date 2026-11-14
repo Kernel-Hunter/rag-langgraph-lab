@@ -41,6 +41,7 @@ CONFIG = prov.HOME / "config.json"
 MAX_JSON_BYTES = 256 * 1024
 MAX_QUESTION_CHARS = 100_000
 MAX_CHAT_BYTES = 48 * 1024 * 1024  # a question with pasted images
+MAX_AUDIO_BYTES = 8 * 1024 * 1024
 MAX_ATTACHMENTS = 20
 MAX_MODEL_LEN = 200
 MAX_KEY_LEN = 500
@@ -671,6 +672,21 @@ def create_app(token: str, engine: Engine | None = None, allowed_hosts=None) -> 
         if provider not in prov.PROVIDERS:
             raise HTTPException(404, "unknown provider")
         return {"models": prov.list_models(provider)}
+
+    @app.post("/api/dictation", dependencies=[Depends(auth)])
+    async def dictation(request: Request):
+        audio = await read_capped(request, MAX_AUDIO_BYTES)
+        if not audio:
+            raise HTTPException(400, "The recording is empty.")
+        from vesper.dictation import transcribe
+
+        try:
+            text = await run_in_threadpool(transcribe, audio)
+        except ImportError:
+            raise HTTPException(503, 'Dictation is not installed. Install Vesper with the "dictation" extra.') from None
+        except Exception:
+            raise HTTPException(503, "Dictation failed. Check your recording and internet connection for the first model download.") from None
+        return {"text": text}
 
     @app.post("/api/chat", dependencies=[Depends(auth)])
     async def chat(request: Request):

@@ -21,6 +21,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "httpx>=0.27"]
+dictation = ["faster-whisper>=1.1,<2", "av>=11,<19"]
 
 [project.scripts]
 vesper = "vesper.tui:main"

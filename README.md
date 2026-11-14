@@ -222,6 +222,13 @@ you can also drop them on the window or paste a screenshot. Every tool call show
 a colored diff with Allow, Always allow and Deny before any change. When the agent moves
 to another folder, the top bar follows it.
 
+The microphone button dictates into the message box: click to record (up to one minute),
+then click again to transcribe and review the text before sending. Dictation is free and
+runs locally using multilingual Whisper; audio is not sent to a provider. The first use
+needs an internet connection to download the model (about 500 MB), and accuracy and speed
+vary by language and computer. The installed desktop app includes the transcription engine;
+for a Python install of the browser app, run `pip install "vesper-agent[dictation]"`.
+
 The Plan button next to the model picker turns plan mode on: the answer is a plan with a
 "Run this plan" button under it. The task list is drawn as a checklist inside the answer,
 and an answer that changed files gets an undo button. `/undo`, `/compact` and `/plan` also

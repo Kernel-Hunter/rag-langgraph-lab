@@ -1,6 +1,6 @@
 """Build the Vesper engine (the Python backend) for the current OS with PyInstaller.
 
-    pip install -e . pyinstaller pillow
+    pip install -e ".[dictation]" pyinstaller pillow
     python packaging/build_engine.py
 
 Output: apps/desktop/engine/ holding vesper-engine (vesper-engine.exe on
@@ -27,15 +27,15 @@ WORK = ROOT / "build" / "engine"
 
 # Imported lazily or loaded by name, so PyInstaller cannot see them on its own.
 SUBMODULES = ["langchain_openai", "langchain_anthropic", "langchain_ollama", "ollama", "tiktoken_ext", "uvicorn"]
-COLLECT_ALL: list[str] = []
+COLLECT_ALL: list[str] = ["faster_whisper", "ctranslate2", "av", "tokenizers", "onnxruntime"]
 METADATA = ["langchain", "langchain-core", "langchain-openai", "langchain-anthropic", "langchain-ollama",
             "ollama", "anthropic",
-            "langgraph", "langsmith", "openai", "tiktoken", "fastapi", "uvicorn"]
+            "langgraph", "langsmith", "openai", "tiktoken", "fastapi", "uvicorn", "faster-whisper", "huggingface-hub"]
 # The Electron shell draws the window now, so the pywebview stack stays out.
 EXCLUDE = ["webview", "pywebview", "objc", "AppKit", "Foundation", "WebKit", "PyObjCTools", "gi", "qtpy",
            "PyQt5", "PyQt6", "PySide2", "PySide6", "clr", "pythonnet",
            "torch", "sentence_transformers", "langchain_huggingface", "langchain_chroma", "chromadb",
-           "fastembed", "onnxruntime", "numpy",
+           "fastembed",
            "pytest", "matplotlib", "IPython", "tkinter", "customtkinter"]
 
 args = [
