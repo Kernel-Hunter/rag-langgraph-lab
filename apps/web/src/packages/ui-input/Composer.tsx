@@ -6,6 +6,7 @@ import {
 import { Icon, type IconName } from '../ui-primitives/Icon'
 import { ModelPicker } from '../ui-model-selection/ModelPicker'
 import { useDictation } from './useDictation'
+import { formatBytes } from './dictationProgress'
 
 const MAX_LEN = 100_000
 const MODE_LABEL = { ask: 'Ask first', 'auto-edit': 'Auto-edit', yolo: 'Full access', plan: 'Read only' } as const
@@ -156,6 +157,18 @@ export function Composer() {
           aria-label="Message"
           spellCheck
         />
+        {dictation.phase === 'transcribing' && dictation.progress?.phase === 'loading' && (
+          dictation.progress.downloaded < dictation.progress.total ? (
+            <div className="dictation-download" role="status">
+              <span>Downloading speech model · {formatBytes(dictation.progress.downloaded)} / {formatBytes(dictation.progress.total)}
+                {' '}({Math.floor(100 * dictation.progress.downloaded / dictation.progress.total)}%)
+                {' '}· {dictation.speed === null ? 'Calculating speed…' : `~${formatBytes(dictation.speed)}/s`}
+              </span>
+              <progress aria-label="Speech model download" value={dictation.progress.downloaded} max={dictation.progress.total} />
+              <span>Estimated download speed; the first download may take a few minutes.</span>
+            </div>
+          ) : <div className="dictation-status" role="status">Loading speech model…</div>
+        )}
         <div className="composer-bar">
           <div className="composer-left">
             <button type="button" className={`icon-btn add-btn${adding ? ' on' : ''}`} onClick={() => setAdding(a => !a)}
@@ -178,8 +191,8 @@ export function Composer() {
             </button>
           </div>
           <div className="composer-right">
-            {dictation.phase !== 'idle' && <span className="dictation-status" role="status">
-              {dictation.phase === 'recording' ? 'Recording · click mic to finish' : dictation.phase === 'requesting' ? 'Opening microphone…' : 'Transcribing locally…'}
+            {dictation.phase !== 'idle' && dictation.progress?.phase !== 'loading' && <span className="dictation-status" role="status">
+              {dictation.phase === 'recording' ? 'Recording · click mic to finish' : dictation.phase === 'requesting' ? 'Opening microphone…' : dictation.progress?.phase === 'transcribing' ? 'Transcribing locally…' : 'Preparing dictation…'}
             </span>}
             <button type="button" className={`mic-btn${dictation.phase === 'recording' ? ' recording' : ''}`}
               onClick={() => void dictation.toggle()} disabled={streaming || (dictation.phase !== 'idle' && dictation.phase !== 'recording')}

@@ -36,6 +36,9 @@
 .mic-btn.recording { color: var(--err); background: color-mix(in srgb, var(--err) 15%, transparent); }
 .mic-btn:disabled { opacity: .5; }
 .dictation-status { font-size: 12px; color: var(--text-3); }
+.dictation-download { display: grid; gap: 4px; font-size: 12px; color: var(--text-2); }
+.dictation-download progress { width: 100%; height: 6px; accent-color: var(--accent); }
+.dictation-download span:last-child { color: var(--text-3); }
 .count { font-size: 12px; color: var(--text-3); }
 .count.err { color: var(--err); }
 .hint { margin: 8px 0 0; text-align: center; font-size: 11.5px; color: var(--text-3); }

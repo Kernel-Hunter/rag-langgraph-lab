@@ -1,7 +1,9 @@
 """Local dictation: API limits and model reuse without network or microphone access."""
 
 import io
+import os
 import sys
+import threading
 import types
 import wave
 
@@ -68,3 +70,63 @@ def test_model_loads_once_and_transcribes_in_memory(home, monkeypatch):
     assert len(models) == 1
     assert models[0][0] == 'small'
     assert models[0][1]['device'] == 'cpu'
+    assert models[0][1]['revision'] == dictation.MODEL_REVISION
+    assert dictation.progress()['phase'] == 'idle'
+
+
+def test_progress_during_download_and_after_completion(home, client, monkeypatch):
+    from vesper import dictation
+
+    monkeypatch.setattr(dictation.providers, 'HOME', home)
+    monkeypatch.setattr(dictation, '_model', None)
+    monkeypatch.setattr(dictation, 'MODEL_BYTES', 100)
+    blobs = home / 'models' / 'models--Systran--faster-whisper-small' / 'blobs'
+    blobs.mkdir(parents=True)
+    older = blobs / f'{dictation.MODEL_BLOB}.first.incomplete'
+    newer = blobs / f'{dictation.MODEL_BLOB}.second.incomplete'
+    older.write_bytes(b'x' * 60)
+    newer.write_bytes(b'x' * 30)
+    os.utime(older, (1, 1))
+    os.utime(newer, (2, 2))
+    (blobs / f'{dictation.MODEL_BLOB}.unrelated').write_bytes(b'x' * 90)
+    started, release = threading.Event(), threading.Event()
+
+    class Model:
+        def __init__(self, *_args, **_kwargs):
+            started.set()
+            assert release.wait(10)
+
+        def transcribe(self, _audio, **_kwargs):
+            return iter([types.SimpleNamespace(text=' hello')]), None
+
+    monkeypatch.setitem(sys.modules, 'faster_whisper', types.SimpleNamespace(WhisperModel=Model))
+    result = []
+    thread = threading.Thread(target=lambda: result.append(dictation.transcribe(b'audio')))
+    thread.start()
+    try:
+        assert started.wait(5)
+        assert client.get('/api/dictation/progress', headers={'X-Token': ''}).status_code == 401
+        assert client.get('/api/dictation/progress').json() == {
+            'phase': 'loading', 'downloaded': 30, 'total': 100,
+        }
+        (blobs / dictation.MODEL_BLOB).write_bytes(b'x' * 105)
+        assert client.get('/api/dictation/progress').json()['downloaded'] == 100
+    finally:
+        release.set()
+        thread.join(timeout=10)
+    assert not thread.is_alive()
+    assert result == ['hello']
+    assert client.get('/api/dictation/progress').json()['phase'] == 'idle'
+
+
+def test_progress_resets_after_loading_failure(home, monkeypatch):
+    from vesper import dictation
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError('download failed')
+
+    monkeypatch.setattr(dictation, '_model', None)
+    monkeypatch.setitem(sys.modules, 'faster_whisper', types.SimpleNamespace(WhisperModel=fail))
+    with pytest.raises(RuntimeError):
+        dictation.transcribe(b'audio')
+    assert dictation.progress()['phase'] == 'idle'

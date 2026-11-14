@@ -225,8 +225,8 @@ to another folder, the top bar follows it.
 The microphone button dictates into the message box: click to record (up to one minute),
 then click again to transcribe and review the text before sending. Dictation is free and
 runs locally using multilingual Whisper; audio is not sent to a provider. The first use
-needs an internet connection to download the model (about 500 MB), and accuracy and speed
-vary by language and computer. The installed desktop app includes the transcription engine;
+needs an internet connection to download the model (about 500 MB); the app shows estimated
+progress and download speed. Accuracy and transcription speed vary by language and computer. The installed desktop app includes the transcription engine;
 for a Python install of the browser app, run `pip install "vesper-agent[dictation]"`.
 
 The Plan button next to the model picker turns plan mode on: the answer is a plan with a

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
-import { api } from '../connection/api'
+import { api, type DictationProgress } from '../connection/api'
 import { toast } from '../store/store'
+import { downloadSpeed, type DownloadSample } from './dictationProgress'
 
 type Phase = 'idle' | 'requesting' | 'recording' | 'transcribing'
 const MAX_RECORDING_MS = 60_000
@@ -8,6 +9,8 @@ const MAX_RECORDING_MS = 60_000
 /** Record only after a click, release the microphone on stop, and never send a message automatically. */
 export function useDictation(chatId: string | null, insert: (text: string) => void) {
   const [phase, setPhase] = useState<Phase>('idle')
+  const [progress, setProgress] = useState<DictationProgress | null>(null)
+  const [speed, setSpeed] = useState<number | null>(null)
   const recorder = useRef<MediaRecorder | null>(null)
   const stream = useRef<MediaStream | null>(null)
   const timer = useRef<number | null>(null)
@@ -35,6 +38,37 @@ export function useDictation(chatId: string | null, insert: (text: string) => vo
       release()
     }
   }, [chatId])
+
+  useEffect(() => {
+    if (phase !== 'transcribing') {
+      setProgress(null)
+      setSpeed(null)
+      return
+    }
+    let active = true
+    let next: number | undefined
+    let samples: DownloadSample[] = []
+    const poll = async (): Promise<void> => {
+      try {
+        const value = await api.dictationProgress()
+        if (!active) return
+        setProgress(value)
+        if (value.phase === 'loading' && value.downloaded < value.total) {
+          const now = performance.now()
+          if (samples.length && value.downloaded < samples[samples.length - 1]!.bytes) samples = []
+          samples.push({ time: now, bytes: value.downloaded })
+          samples = samples.filter(sample => now - sample.time <= 8000)
+          setSpeed(downloadSpeed(samples))
+        } else {
+          samples = []
+          setSpeed(null)
+        }
+      } catch { /* keep retrying; transcription itself reports errors */ }
+      if (active) next = window.setTimeout(() => void poll(), 1000)
+    }
+    void poll()
+    return () => { active = false; if (next !== undefined) window.clearTimeout(next) }
+  }, [phase])
 
   const toggle = async (): Promise<void> => {
     if (phase === 'recording') {
@@ -92,5 +126,5 @@ export function useDictation(chatId: string | null, insert: (text: string) => vo
       }
     }
   }
-  return { phase, toggle }
+  return { phase, progress, speed, toggle }
 }

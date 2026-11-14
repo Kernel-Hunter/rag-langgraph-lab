@@ -159,7 +159,14 @@ async function request(path: string, init: RequestInit & { json?: unknown } = {}
   return res
 }
 
+export interface DictationProgress {
+  phase: 'idle' | 'loading' | 'transcribing'
+  downloaded: number
+  total: number
+}
+
 export const api = {
+  dictationProgress: async (): Promise<DictationProgress> => (await request('/api/dictation/progress')).json(),
   transcribe: async (audio: Blob): Promise<string> =>
     ((await (await request('/api/dictation', { method: 'POST', body: audio, headers: { 'Content-Type': 'application/octet-stream' } })).json()) as { text: string }).text,
   state: async (): Promise<ServerState> => (await request('/api/state')).json(),

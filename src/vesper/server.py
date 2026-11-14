@@ -673,6 +673,12 @@ def create_app(token: str, engine: Engine | None = None, allowed_hosts=None) -> 
             raise HTTPException(404, "unknown provider")
         return {"models": prov.list_models(provider)}
 
+    @app.get("/api/dictation/progress", dependencies=[Depends(auth)])
+    async def dictation_progress():
+        from vesper.dictation import progress
+
+        return await run_in_threadpool(progress)
+
     @app.post("/api/dictation", dependencies=[Depends(auth)])
     async def dictation(request: Request):
         audio = await read_capped(request, MAX_AUDIO_BYTES)
