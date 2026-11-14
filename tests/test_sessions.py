@@ -100,6 +100,49 @@ def test_session_is_saved_logged_and_resumed(store, proj):
     assert s.history == [] and s.id != row["id"] and store.get_session(row["id"]) is not None
 
 
+def test_openai_response_stream_is_not_repeated(proj):
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from langchain_openai import ChatOpenAI
+
+    llm = ChatOpenAI(model="offline-test", api_key="offline-test", use_responses_api=True)
+    response = [
+        SimpleNamespace(type="response.created", response=SimpleNamespace(id="resp_test")),
+        SimpleNamespace(type="response.output_text.delta", output_index=0, content_index=0, delta="Hey! "),
+        SimpleNamespace(type="response.output_text.delta", output_index=0, content_index=0,
+                        delta="What can I help you with?"),
+        SimpleNamespace(type="response.output_text.done", output_index=0, content_index=0, item_id="msg_test"),
+    ]
+    stream = MagicMock()
+    stream.__enter__.return_value = iter(response)
+    llm.root_client.responses.create = MagicMock(return_value=stream)
+    s = Session(llm, Workspace(proj))
+    events = list(s.ask("yo"))
+    assert "".join(d["text"] for e, d in events if e == "token") == "Hey! What can I help you with?"
+
+
+def test_stream_deduplication_is_scoped_to_each_model_step(proj, monkeypatch):
+    from langchain_core.messages import AIMessageChunk
+
+    class Agent:
+        def stream(self, *args, **kwargs):
+            yield "messages", (AIMessageChunk("First.", id="chunk-1"), {"langgraph_node": "model"})
+            yield "updates", {"model": {"messages": [AIMessage("First.", id="response-1")]}}
+            yield "updates", {"model": {"messages": [AIMessage("Second.", id="response-2")]}}
+            yield "messages", (AIMessageChunk("Third.", id="chunk-3"), {"langgraph_node": "model"})
+            yield "updates", {"model": {"messages": [AIMessage("Third.", id="response-3")]}}
+            yield "messages", (AIMessageChunk("", id="chunk-4", additional_kwargs={"reasoning_content": "Thinking."}),
+                               {"langgraph_node": "model"})
+            yield "updates", {"model": {"messages": [AIMessage("Fourth.", id="response-4")]}}
+
+    s = Session(fake(), Workspace(proj))
+    monkeypatch.setattr(s, "_agent_for_cwd", lambda: Agent())
+    events = list(s.ask("test"))
+    assert [d["text"] for e, d in events if e == "token"] == ["First.", "Second.", "Third.", "Fourth."]
+    assert [d["text"] for e, d in events if e == "reasoning"] == ["Thinking."]
+
+
 def test_agent_can_move_between_folders(store, proj):
     ws = Workspace(proj, mode="yolo")
     s = Session(fake(call("change_directory", path="sub"), call("write_file", "c2", path="note.txt", content="hi\n"),
