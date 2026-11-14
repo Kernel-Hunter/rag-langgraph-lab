@@ -608,6 +608,7 @@ class Session:
         messages = [*history, HumanMessage(human_content(text, images or []))]
         final: list[BaseMessage] | None = None
         streamed_ids: set[str] = set()
+        streamed_model: set[str] = set()  # chunk IDs can differ from the final model message ID
         tool_started: dict[str, float] = {}
         waited_before = self.workspace.waited
         tools = 0
@@ -626,11 +627,13 @@ class Session:
                         thought = reasoning_of(msg)
                         if thought:
                             streamed_ids.add(msg.id or "")
+                            streamed_model.add("reasoning")
                             yield "reasoning", {"text": thought}
                         piece = text_of(msg.content)
                         if piece:
                             streamed_ids.add(msg.id or "")
                             for kind, part in splitter.feed(piece):
+                                streamed_model.add(kind)
                                 yield kind, {"text": part}
                         for part in msg.tool_call_chunks or []:
                             draft = drafts.setdefault(part.get("index") or 0, {"name": "", "chars": 0, "told": -1})
@@ -643,15 +646,19 @@ class Session:
                     for node, update in (chunk or {}).items():
                         for m in (update.get("messages", []) if isinstance(update, dict) else []):
                             if isinstance(m, AIMessage):
-                                yield from ((kind, {"text": part}) for kind, part in splitter.flush())
+                                for kind, part in splitter.flush():
+                                    streamed_model.add(kind)
+                                    yield kind, {"text": part}
                                 drafts.clear()
-                                if (m.id or "") not in streamed_ids:  # a model that does not stream
+                                if node == "model" or (m.id or "") not in streamed_ids:
                                     thought, answer = split_thinking(text_of(m.content))
                                     thought = reasoning_of(m) + thought
-                                    if thought:
+                                    if thought and (node != "model" or "reasoning" not in streamed_model):
                                         yield "reasoning", {"text": thought}
-                                    if answer:
+                                    if answer and (node != "model" or "token" not in streamed_model):
                                         yield "token", {"text": answer}
+                                if node == "model":
+                                    streamed_model.clear()
                                 for call in m.tool_calls or []:
                                     tools += 1
                                     # Time spent waiting for the user's approval is not the tool's time.
